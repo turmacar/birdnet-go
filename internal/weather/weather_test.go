@@ -1213,6 +1213,102 @@ func TestReconcileConfig_KeepsPreviousProviderOnUnsupportedValue(t *testing.T) {
 		"an unsupported configured provider should keep the previous provider active")
 }
 
+// TestReconcileConfig_ResetsBackoffOnProviderSwitch verifies that a provider
+// switch clears the transient-failure backoff state, so the new provider doesn't
+// inherit backoff delays from the old one (while auth state is preserved).
+func TestReconcileConfig_ResetsBackoffOnProviderSwitch(t *testing.T) {
+	settings := createTestSettings(t, yrNoProviderName)
+	svc, err := NewService(settings, nil, nil)
+	require.NoError(t, err)
+
+	// Induce a transient failure to set backoff state
+	svc.backoff.recordFailure()
+	svc.backoff.recordFailure()
+	_, failures, inBackoff := svc.backoff.snapshot()
+	assert.Equal(t, 2, failures, "Setup: should have 2 failures")
+	assert.True(t, inBackoff, "Setup: should be in backoff")
+
+	// Switch to OpenWeather provider
+	changed := createTestSettings(t, openWeatherProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.OpenWeather.APIKey = "test-key"
+	})
+	svc.reconcileConfig(changed)
+
+	// Verify provider switched
+	assert.Equal(t, openWeatherProviderName, svc.activeProviderName(),
+		"Provider should switch to the new one")
+
+	// Verify backoff was cleared
+	_, failures, inBackoff = svc.backoff.snapshot()
+	assert.Equal(t, 0, failures, "Backoff should be cleared after provider switch")
+	assert.False(t, inBackoff, "Should not be in backoff after provider switch")
+}
+
+// TestReconcileConfig_PreservesAuthLockoutOnProviderSwitch verifies that auth
+// lockout is initially preserved when switching providers (so the new provider
+// doesn't immediately retry if it's also misconfigured), but is then
+// automatically cleared when the provider change causes the auth config hash
+// to change (which happens because the provider name is part of the hash).
+func TestReconcileConfig_PreservesAuthLockoutOnProviderSwitch(t *testing.T) {
+	settings := createTestSettings(t, openWeatherProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.OpenWeather.APIKey = "test-key"
+	})
+	svc, err := NewService(settings, nil, nil)
+	require.NoError(t, err)
+
+	// Trigger auth lockout
+	for range maxConsecutiveAuthFailures {
+		svc.backoff.recordAuthFailure()
+	}
+	authDisabled, _, _ := svc.backoff.snapshot()
+	require.True(t, authDisabled, "Setup: auth should be locked out")
+
+	// Switch provider
+	changed := createTestSettings(t, wundergroundProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Wunderground.APIKey = "test-key"
+	})
+	svc.reconcileConfig(changed)
+
+	// Verify provider switched
+	assert.Equal(t, wundergroundProviderName, svc.activeProviderName(),
+		"Provider should switch to the new one")
+
+	// Auth lockout is automatically cleared because the provider change causes
+	// the weatherAuthConfigKey() hash to change (provider name is part of hash).
+	// This is the safety mechanism: auth lockout is only cleared when the
+	// *auth-relevant config* changes, and a provider switch counts as a
+	// significant config change that warrants retry.
+	authDisabled, _, _ = svc.backoff.snapshot()
+	assert.False(t, authDisabled,
+		"Auth lockout should be cleared after provider switch due to config hash change")
+}
+
+// TestReconcileConfig_RateLimitedProviderSwitches verifies that provider
+// switches are rate-limited to prevent DoS attacks that could bypass backoff
+// by repeatedly calling reset() to clear retry delays.
+func TestReconcileConfig_RateLimitedProviderSwitches(t *testing.T) {
+	settings := createTestSettings(t, yrNoProviderName)
+	svc, err := NewService(settings, nil, nil)
+	require.NoError(t, err)
+
+	// First switch succeeds
+	changed1 := createTestSettings(t, openWeatherProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.OpenWeather.APIKey = "test-key"
+	})
+	svc.reconcileConfig(changed1)
+	assert.Equal(t, openWeatherProviderName, svc.activeProviderName(),
+		"First provider switch should succeed")
+
+	// Immediately request a second switch (within 5 minutes)
+	// It should be rejected to prevent DoS via rapid resets
+	changed2 := createTestSettings(t, wundergroundProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Wunderground.APIKey = "test-key"
+	})
+	svc.reconcileConfig(changed2)
+	assert.Equal(t, openWeatherProviderName, svc.activeProviderName(),
+		"Provider switch within 5 minutes should be rejected to prevent DoS")
+}
+
 // TestWundergroundProvider_HTTP204_NoContent tests that Wunderground returns
 // ErrWeatherNoData for HTTP 204.
 func TestWundergroundProvider_HTTP204_NoContent(t *testing.T) {

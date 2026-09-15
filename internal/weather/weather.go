@@ -218,6 +218,10 @@ type Service struct {
 	// is not silently replaced on its first fetch cycle. NewService sets this
 	// true immediately since its provider/providerName already match settings.
 	providerBaselined bool
+	// lastProviderSwitchTime tracks the last provider switch to enforce a
+	// minimum interval between switches. This prevents DoS attacks where rapid
+	// provider switches could repeatedly call reset() and bypass backoff delays.
+	lastProviderSwitchTime time.Time
 }
 
 // setProvider atomically replaces the active provider implementation and name.
@@ -548,6 +552,12 @@ func (s *Service) saveWeatherData(data *WeatherData) error {
 // startup DB contention with other services (image cache warm-up, threshold cleanup).
 const DefaultStartupDelay = 10 * time.Second
 
+// minProviderSwitchInterval is the minimum time between provider switches.
+// This prevents DoS attacks where rapid provider changes could bypass backoff
+// delays by repeatedly calling reset(). The UI enforces rate-limiting separately,
+// but this server-side guard ensures safety even if the UI is compromised.
+const minProviderSwitchInterval = 5 * time.Minute
+
 // absoluteZeroCelsius is the lowest possible temperature in Celsius
 const absoluteZeroCelsius = -273.15
 
@@ -732,11 +742,29 @@ func (s *Service) reconcileConfig(settings *conf.Settings) {
 				logger.String("previous_provider", previousProviderName),
 				logger.String("configured_provider", settings.Realtime.Weather.Provider))
 		case newProviderName != previousProviderName:
+			// Rate-limit provider switches to prevent DoS attacks that could bypass
+			// backoff delays via repeated reset() calls (from compromised UI, etc.)
+			if !s.lastProviderSwitchTime.IsZero() && time.Since(s.lastProviderSwitchTime) < minProviderSwitchInterval {
+				getLogger().Warn("Provider switch requested too soon, ignoring change to prevent DoS",
+					logger.String("previous_provider", previousProviderName),
+					logger.String("requested_provider", newProviderName),
+					logger.Duration("time_until_allowed", minProviderSwitchInterval-time.Since(s.lastProviderSwitchTime)))
+				return // Keep previous provider active
+			}
+
 			getLogger().Info("Weather provider changed, switching provider implementation",
 				logger.String("previous_provider", previousProviderName),
 				logger.String("new_provider", newProviderName))
 			s.setProvider(newProvider, newProviderName)
 			previousProviderName = newProviderName
+			s.lastProviderSwitchTime = time.Now()
+			// Reset backoff state when switching providers so the new provider
+			// doesn't inherit transient-failure backoff from the old one. Auth
+			// lockout (authDisabled) is preserved through this cycle as a safety
+			// precaution (new provider might be misconfigured), but will be
+			// automatically cleared on the next cycle when the provider change
+			// causes weatherAuthConfigKey() to return a different hash.
+			s.backoff.reset()
 		}
 	}
 

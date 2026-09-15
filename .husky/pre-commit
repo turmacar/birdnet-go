@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu  # Exit on error, treat unset variables as error
 
+# Compute absolute paths relative to git root (works from any working directory)
+GIT_ROOT=$(git rev-parse --show-toplevel)
+TENSORFLOW_HEADERS_DIR="${GIT_ROOT}/.cache/tensorflow"
+
 # Go backend checks
 echo "🔍 Running backend pre-commit checks..."
 
@@ -42,14 +46,18 @@ if [ -n "$GO_FILES" ]; then
     echo "✅ All Go files are properly formatted"
   fi
   
-  # Run golangci-lint
+  # Run golangci-lint with proper CGO flags for TensorFlow Lite compilation
   echo "   Linting Go files..."
-  if ! golangci-lint run -v; then
+  export CGO_ENABLED=1
+  export CGO_CFLAGS="-I${TENSORFLOW_HEADERS_DIR} -I${GIT_ROOT}/.cache/openvino/include"
+  export CGO_LDFLAGS="-L/usr/lib -ltensorflowlite_c"
+  if ! golangci-lint run --build-tags=noembed,skipfrontend -v; then
     echo "❌ golangci-lint found issues in Go files"
     echo "💡 Fix the issues above before committing"
     echo "⚠️  Note: --no-verify bypasses are not accepted in this project"
     exit 1
   fi
+  unset CGO_ENABLED CGO_CFLAGS CGO_LDFLAGS
   echo "✅ golangci-lint passed for all Go files"
 else
   echo "📄 No Go files in this commit, skipping golangci-lint"
