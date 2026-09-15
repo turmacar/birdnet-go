@@ -732,6 +732,9 @@ export type TranslationKey =
   | 'detections.weather.labels.humidity'
   | 'detections.weather.labels.pressure'
   | 'detections.weather.labels.cloudCover'
+  | 'detections.weather.labels.uvIndex'
+  | 'detections.weather.labels.lightningDistance'
+  | 'detections.weather.labels.lightningCount' // params: count
   | 'detections.weather.units.temperature'
   | 'detections.weather.units.temperatureFahrenheit'
   | 'detections.weather.units.windSpeed'
@@ -2410,6 +2413,7 @@ export type TranslationKey =
   | 'settings.integration.weather.provider.options.yrno'
   | 'settings.integration.weather.provider.options.openweather'
   | 'settings.integration.weather.provider.options.wunderground'
+  | 'settings.integration.weather.provider.options.tempest'
   | 'settings.integration.weather.wunderground.apiKey.label'
   | 'settings.integration.weather.wunderground.apiKey.helpText'
   | 'settings.integration.weather.wunderground.stationId.label'
@@ -2418,11 +2422,24 @@ export type TranslationKey =
   | 'settings.integration.weather.wunderground.endpoint.helpText'
   | 'settings.integration.weather.wunderground.units.label'
   | 'settings.integration.weather.wunderground.units.helpText'
+  | 'settings.integration.weather.tempest.listenAddress.label'
+  | 'settings.integration.weather.tempest.listenAddress.helpText'
+  | 'settings.integration.weather.tempest.extraFields.title'
+  | 'settings.integration.weather.tempest.extraFields.description'
+  | 'settings.integration.weather.tempest.extraFields.illuminance'
+  | 'settings.integration.weather.tempest.extraFields.uvIndex'
+  | 'settings.integration.weather.tempest.extraFields.solarRadiation'
+  | 'settings.integration.weather.tempest.extraFields.lightningDistance'
+  | 'settings.integration.weather.tempest.extraFields.lightningCount'
+  | 'settings.integration.weather.tempest.extraFields.windLull'
+  | 'settings.integration.weather.tempest.extraFields.localOnly'
   | 'settings.integration.weather.notes.none'
   | 'settings.integration.weather.notes.yrno.description'
   | 'settings.integration.weather.notes.yrno.freeService'
   | 'settings.integration.weather.notes.openweather'
   | 'settings.integration.weather.notes.wunderground'
+  | 'settings.integration.weather.notes.tempest'
+  | 'settings.integration.weather.notes.tempestNetworking'
   | 'settings.integration.weather.apiKey.label'
   | 'settings.integration.weather.apiKey.helpText'
   | 'settings.integration.weather.units.label'
@@ -4352,6 +4369,7 @@ export type TranslationParams = {
   'detections.selection.bulkDeleteSuccess': { count: string | number };
   'detections.selection.bulkPartial': { processed: string | number; skipped: string | number };
   'detections.selection.tooManyDetections': { count: string | number };
+  'detections.weather.labels.lightningCount': { count: string | number };
   'detections.row.viewDetails': { species: string | number };
   'detections.aria.loaded': { species: string | number };
   'detections.aria.error': { error: string | number };

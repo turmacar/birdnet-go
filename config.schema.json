@@ -2607,6 +2607,46 @@
       "type": "object",
       "description": "TelemetrySettings contains settings for telemetry."
     },
+    "TempestExtraFields": {
+      "properties": {
+        "illuminance": {
+          "type": "boolean"
+        },
+        "uvindex": {
+          "type": "boolean"
+        },
+        "solarradiation": {
+          "type": "boolean"
+        },
+        "lightningdistance": {
+          "type": "boolean"
+        },
+        "lightningcount": {
+          "type": "boolean"
+        },
+        "windlull": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "TempestExtraFields selects which optional Tempest sensor readings to persist."
+    },
+    "TempestSettings": {
+      "properties": {
+        "listenaddress": {
+          "type": "string",
+          "description": "ListenAddress is the local UDP address to listen on for Tempest hub\nbroadcasts, e.g. \":50222\" (all interfaces) or \"192.168.1.50:50222\" (a\nspecific interface). Empty defaults to \":50222\" - WeatherFlow's fixed,\nnon-configurable broadcast port. Receiving these broadcasts requires the\nbirdnet-go container/host to share the LAN's broadcast domain (e.g.\nDocker host networking or an ipvlan/macvlan network); a standard Docker\nbridge network will never receive them regardless of this setting."
+        },
+        "extrafields": {
+          "$ref": "#/$defs/TempestExtraFields",
+          "description": "ExtraFields selects which Tempest sensor readings beyond the shared\nWeatherData fields get persisted alongside each hourly weather record\n(see HourlyWeather.TempestExtrasJSON). All false by default: this data\nis Tempest-specific and has no equivalent in the other providers, so it\nis opt-in per field rather than always stored."
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "description": "TempestSettings contains settings for a local Tempest/WeatherFlow weather station integration."
+    },
     "Thumbnails": {
       "properties": {
         "debug": {
@@ -2729,7 +2769,7 @@
       "properties": {
         "provider": {
           "type": "string",
-          "description": "\"none\", \"yrno\", \"openweather\", or \"wunderground\""
+          "description": "\"none\", \"yrno\", \"openweather\", \"wunderground\", or \"tempest\""
         },
         "pollinterval": {
           "type": "integer",
@@ -2746,6 +2786,10 @@
         "wunderground": {
           "$ref": "#/$defs/WundergroundSettings",
           "description": "WeatherUnderground integration settings"
+        },
+        "tempest": {
+          "$ref": "#/$defs/TempestSettings",
+          "description": "Local Tempest/WeatherFlow UDP integration settings"
         }
       },
       "additionalProperties": false,

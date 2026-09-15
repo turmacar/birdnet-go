@@ -7,6 +7,7 @@
 import type {
   OpenWeatherSettings,
   WundergroundSettings,
+  TempestSettings,
   WeatherSettings,
 } from '$lib/stores/settings';
 
@@ -32,6 +33,23 @@ export const wundergroundDefaults: WundergroundSettings = {
 };
 
 /**
+ * Default configuration for the local Tempest/WeatherFlow UDP provider.
+ * Empty listenAddress defaults to ":50222" at the backend (WeatherFlow's
+ * fixed, non-configurable broadcast port).
+ */
+export const tempestDefaults: TempestSettings = {
+  listenAddress: '',
+  extraFields: {
+    illuminance: false,
+    uvIndex: false,
+    solarRadiation: false,
+    lightningDistance: false,
+    lightningCount: false,
+    windLull: false,
+  },
+};
+
+/**
  * Complete default weather configuration
  */
 export const weatherDefaults: WeatherSettings = {
@@ -40,6 +58,7 @@ export const weatherDefaults: WeatherSettings = {
   debug: false,
   openWeather: openWeatherDefaults,
   wunderground: wundergroundDefaults,
+  tempest: tempestDefaults,
 };
 
 /**
@@ -47,12 +66,14 @@ export const weatherDefaults: WeatherSettings = {
  */
 export function getProviderDefaults(
   provider: WeatherSettings['provider']
-): OpenWeatherSettings | WundergroundSettings | null {
+): OpenWeatherSettings | WundergroundSettings | TempestSettings | null {
   switch (provider) {
     case 'openweather':
       return openWeatherDefaults;
     case 'wunderground':
       return wundergroundDefaults;
+    case 'tempest':
+      return tempestDefaults;
     case 'none':
     case 'yrno':
       return null;

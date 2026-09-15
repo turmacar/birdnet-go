@@ -915,7 +915,10 @@
         "wind": "Vind",
         "humidity": "Luftfuktighet",
         "pressure": "Lufttryck",
-        "cloudCover": "Molntäcke"
+        "cloudCover": "Molntäcke",
+        "uvIndex": "UV Index",
+        "lightningDistance": "Average lightning strike distance",
+        "lightningCount": "{count} lightning strike(s)"
       },
       "units": {
         "temperature": "°C",
@@ -3293,7 +3296,8 @@
             "none": "Ingen",
             "yrno": "Yr.no",
             "openweather": "OpenWeather",
-            "wunderground": "Weather Underground"
+            "wunderground": "Weather Underground",
+            "tempest": "Tempest (local)"
           }
         },
         "wunderground": {
@@ -3314,6 +3318,23 @@
             "helpText": "Välj enheter för temperatur och vindhastighet (m = Metrisk, e = Imperial, h = UK Hybrid)."
           }
         },
+        "tempest": {
+          "listenAddress": {
+            "label": "UDP Listen Address",
+            "helpText": "Local UDP address to listen on for Tempest hub broadcasts. Leave empty to use the default \":50222\" (WeatherFlow's fixed broadcast port)."
+          },
+          "extraFields": {
+            "title": "Ytterligare stationsdata",
+            "description": "Välj vilka Tempest-specifika mätvärden som ska sparas med varje väderregistrering.",
+            "illuminance": "Belysningsstyrka",
+            "uvIndex": "UV-index",
+            "solarRadiation": "Solstrålning",
+            "lightningDistance": "Avstånd till blixt",
+            "lightningCount": "Antal blixtnedslag",
+            "windLull": "Lägsta vindhastighet",
+            "localOnly": "Dessa mätvärden kommer direkt från din lokala Tempest-hubb och stannar i BirdNET-Go. De laddas aldrig upp till BirdWeather eller någon annan vädertjänst."
+          }
+        },
         "notes": {
           "none": "Ingen väderdata kommer att hämtas.",
           "yrno": {
@@ -3321,7 +3342,9 @@
             "freeService": "Yr är en gratis väderdatatjänst. För mer information, besök <a href=\"https://hjelp.yr.no/hc/en-us/articles/206550539-Facts-about-Yr\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Yr.no</a>."
           },
           "openweather": "Användning av OpenWeather kräver en API-nyckel, registrera dig för en gratis API-nyckel på <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
-          "wunderground": "Kräver en Weather Underground API-nyckel och ett giltigt PWS-stations-ID. Se <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> för detaljer."
+          "wunderground": "Kräver en Weather Underground API-nyckel och ett giltigt PWS-stations-ID. Se <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> för detaljer.",
+          "tempest": "Reads live observations broadcast locally over UDP by a Tempest/WeatherFlow weather station on your network. No API key, account, or internet connection required.",
+          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting."
         },
         "apiKey": {
           "label": "API-nyckel",
