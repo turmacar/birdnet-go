@@ -553,10 +553,10 @@ func (s *Service) saveWeatherData(data *WeatherData) error {
 const DefaultStartupDelay = 10 * time.Second
 
 // minProviderSwitchInterval is the minimum time between provider switches.
-// This prevents DoS attacks where rapid provider changes could bypass backoff
-// delays by repeatedly calling reset(). The UI enforces rate-limiting separately,
-// but this server-side guard ensures safety even if the UI is compromised.
-const minProviderSwitchInterval = 5 * time.Minute
+// This prevents accidental rapid switching via UI that could bypass backoff
+// delays by repeatedly calling reset(). The interval is conservative enough
+// to allow intentional changes while preventing accidental repeated clicks.
+const minProviderSwitchInterval = 1 * time.Minute
 
 // absoluteZeroCelsius is the lowest possible temperature in Celsius
 const absoluteZeroCelsius = -273.15
