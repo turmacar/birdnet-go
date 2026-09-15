@@ -403,10 +403,6 @@ export type TranslationKey =
   | 'notifications.content.modelPath.builtinMessage' // params: modelName
   | 'notifications.content.modelPath.notRegisteredTitle' // params: sourceName
   | 'notifications.content.modelPath.notRegisteredMessage' // params: models, sourceName
-  | 'notifications.content.acousticModels.noneTitle'
-  | 'notifications.content.acousticModels.noneMessage'
-  | 'notifications.content.acousticModels.loadFailedTitle'
-  | 'notifications.content.acousticModels.loadFailedMessage'
   | 'notifications.content.alert.firedTitle' // params: rule_name
   | 'notifications.content.alert.metricExceeded' // params: value, threshold
   | 'notifications.content.alert.detectionOccurred' // params: species_name, confidence
@@ -604,12 +600,6 @@ export type TranslationKey =
   | 'dashboard.errors.recentDetectionsFetch' // params: status
   | 'dashboard.errors.recentDetectionsLoad'
   | 'dashboard.errors.configFetch' // params: status
-  | 'dashboard.acousticModels.noneTitle'
-  | 'dashboard.acousticModels.noneMessage'
-  | 'dashboard.acousticModels.noneAction'
-  | 'dashboard.acousticModels.loadFailedTitle'
-  | 'dashboard.acousticModels.loadFailedMessage'
-  | 'dashboard.acousticModels.loadFailedAction'
   | 'dashboard.banner.title'
   | 'dashboard.banner.titlePlaceholder'
   | 'dashboard.banner.description'
@@ -742,6 +732,9 @@ export type TranslationKey =
   | 'detections.weather.labels.humidity'
   | 'detections.weather.labels.pressure'
   | 'detections.weather.labels.cloudCover'
+  | 'detections.weather.labels.uvIndex'
+  | 'detections.weather.labels.lightningDistance'
+  | 'detections.weather.labels.lightningCount' // params: count
   | 'detections.weather.units.temperature'
   | 'detections.weather.units.temperatureFahrenheit'
   | 'detections.weather.units.windSpeed'
@@ -2420,7 +2413,7 @@ export type TranslationKey =
   | 'settings.integration.weather.provider.options.yrno'
   | 'settings.integration.weather.provider.options.openweather'
   | 'settings.integration.weather.provider.options.wunderground'
-  | 'settings.integration.weather.provider.options.pirateweather'
+  | 'settings.integration.weather.provider.options.tempest'
   | 'settings.integration.weather.wunderground.apiKey.label'
   | 'settings.integration.weather.wunderground.apiKey.helpText'
   | 'settings.integration.weather.wunderground.stationId.label'
@@ -2429,16 +2422,24 @@ export type TranslationKey =
   | 'settings.integration.weather.wunderground.endpoint.helpText'
   | 'settings.integration.weather.wunderground.units.label'
   | 'settings.integration.weather.wunderground.units.helpText'
-  | 'settings.integration.weather.pirateweather.apiKey.label'
-  | 'settings.integration.weather.pirateweather.apiKey.helpText'
-  | 'settings.integration.weather.pirateweather.endpoint.label'
-  | 'settings.integration.weather.pirateweather.endpoint.helpText'
+  | 'settings.integration.weather.tempest.listenAddress.label'
+  | 'settings.integration.weather.tempest.listenAddress.helpText'
+  | 'settings.integration.weather.tempest.extraFields.title'
+  | 'settings.integration.weather.tempest.extraFields.description'
+  | 'settings.integration.weather.tempest.extraFields.illuminance'
+  | 'settings.integration.weather.tempest.extraFields.uvIndex'
+  | 'settings.integration.weather.tempest.extraFields.solarRadiation'
+  | 'settings.integration.weather.tempest.extraFields.lightningDistance'
+  | 'settings.integration.weather.tempest.extraFields.lightningCount'
+  | 'settings.integration.weather.tempest.extraFields.windLull'
+  | 'settings.integration.weather.tempest.extraFields.localOnly'
   | 'settings.integration.weather.notes.none'
   | 'settings.integration.weather.notes.yrno.description'
   | 'settings.integration.weather.notes.yrno.freeService'
   | 'settings.integration.weather.notes.openweather'
   | 'settings.integration.weather.notes.wunderground'
-  | 'settings.integration.weather.notes.pirateweather'
+  | 'settings.integration.weather.notes.tempest'
+  | 'settings.integration.weather.notes.tempestNetworking'
   | 'settings.integration.weather.apiKey.label'
   | 'settings.integration.weather.apiKey.helpText'
   | 'settings.integration.weather.units.label'
@@ -2765,8 +2766,6 @@ export type TranslationKey =
   | 'settings.audio.fileSettings.pathHelp'
   | 'settings.audio.fileSettings.typeLabel'
   | 'settings.audio.fileSettings.typeHelp'
-  | 'settings.audio.fileSettings.ultrasonicTypeLabel'
-  | 'settings.audio.fileSettings.ultrasonicTypeHelp'
   | 'settings.audio.fileSettings.bitrateLabel'
   | 'settings.audio.fileSettings.bitrateHelp' // params: min, max
   | 'settings.audio.fileSettings.losslessBitrateValue'
@@ -2820,16 +2819,6 @@ export type TranslationKey =
   | 'settings.audio.errors.invalidRetentionPolicy'
   | 'settings.audio.models.recommendBoth'
   | 'settings.audio.models.perchOnlyWarning'
-  | 'settings.audio.models.loading'
-  | 'settings.audio.models.noneEnabledTitle'
-  | 'settings.audio.models.noneEnabledHelp'
-  | 'settings.audio.models.noneEnabledLink'
-  | 'settings.audio.models.noneAvailable'
-  | 'settings.audio.models.loadFailedWarning'
-  | 'settings.audio.models.loadFailedLink'
-  | 'settings.audio.models.defaultBadge' // params: models
-  | 'settings.audio.models.defaultPendingBadge'
-  | 'settings.audio.models.noneBadge'
   | 'settings.security.pageLabel'
   | 'settings.security.baseUrlLabel'
   | 'settings.security.baseUrlHelp'
@@ -3766,7 +3755,6 @@ export type TranslationKey =
   | 'errors.integration.birdweatherClientFailed'
   | 'errors.integration.noWeatherProvider'
   | 'errors.integration.openWeatherKeyRequired'
-  | 'errors.integration.pirateWeatherKeyRequired'
   | 'errors.integration.processorUnavailable'
   | 'errors.integration.discoveryFailed'
   | 'errors.notification.serviceUnavailable'
@@ -4381,6 +4369,7 @@ export type TranslationParams = {
   'detections.selection.bulkDeleteSuccess': { count: string | number };
   'detections.selection.bulkPartial': { processed: string | number; skipped: string | number };
   'detections.selection.tooManyDetections': { count: string | number };
+  'detections.weather.labels.lightningCount': { count: string | number };
   'detections.row.viewDetails': { species: string | number };
   'detections.aria.loaded': { species: string | number };
   'detections.aria.error': { error: string | number };
@@ -4548,7 +4537,6 @@ export type TranslationParams = {
   'settings.audio.clipRecording.preCaptureHelp': { max: string | number };
   'settings.audio.clipRecording.bitrateHelp': { min: string | number; max: string | number };
   'settings.audio.fileSettings.bitrateHelp': { min: string | number; max: string | number };
-  'settings.audio.models.defaultBadge': { models: string | number };
   'settings.security.oauth.providers.deleteConfirm': { provider: string | number };
   'settings.security.oauth.getCredentialsLabel': { provider: string | number };
   'settings.security.tls.autoTLSPrivateTLD': { tld: string | number };
