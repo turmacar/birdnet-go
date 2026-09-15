@@ -37,6 +37,7 @@ func TestNewService(t *testing.T) {
 		{"openweather_provider", "openweather", false},
 		{"wunderground_provider", "wunderground", false},
 		{"pirateweather_provider", string(conf.WeatherPirateWeather), false},
+		{"tempest_provider", string(conf.WeatherTempest), false},
 		{"invalid_provider_disabled", "invalid", true},
 		{"empty_provider_defaults_to_yrno", "", false},
 		{"none_provider_disabled", "none", true},
@@ -209,7 +210,7 @@ func TestWeatherDataCreation(t *testing.T) {
 
 // TestSettingsCreation tests the creation of test settings.
 func TestSettingsCreation(t *testing.T) {
-	providers := []string{"yrno", "openweather", "wunderground", string(conf.WeatherPirateWeather)}
+	providers := []string{"yrno", "openweather", "wunderground", string(conf.WeatherPirateWeather), string(conf.WeatherTempest)}
 
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {

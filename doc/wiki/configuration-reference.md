@@ -301,7 +301,7 @@ RealtimeSettings contains all settings related to realtime processing.
 | `realtime.species.include` | string[] | Always include these species |
 | `realtime.species.exclude` | string[] | Always exclude these species |
 | `realtime.species.config` | any |  |
-| `realtime.weather.provider` | string | "none", "yrno", "openweather", "wunderground", or "pirateweather" |
+| `realtime.weather.provider` | string | "none", "yrno", "openweather", "wunderground", "pirateweather", or "tempest" |
 | `realtime.weather.pollinterval` | integer | weather data polling interval in minutes |
 | `realtime.weather.debug` | boolean | true to enable debug mode |
 | `realtime.weather.openweather.enabled` | boolean | true to enable OpenWeather integration, for legacy support |
@@ -315,6 +315,13 @@ RealtimeSettings contains all settings related to realtime processing.
 | `realtime.weather.wunderground.units` | string | units of measurement: "e" (imperial), "m" (metric), "h" (UK hybrid) |
 | `realtime.weather.pirateweather.apikey` | string | Pirate Weather API key |
 | `realtime.weather.pirateweather.endpoint` | string | Pirate Weather API endpoint |
+| `realtime.weather.tempest.listenaddress` | string | ListenAddress is the local UDP address to listen on for Tempest hub broadcasts, e.g. ":50222" (all interfaces) or "192.168.1.50:50222" (a specific interface). Empty defaults to ":50222" - WeatherFlow's fixed, non-configurable broadcast port. Receiving these broadcasts requires the birdnet-go container/host to share the LAN's broadcast domain (e.g. Docker host networking or an ipvlan/macvlan network); a standard Docker bridge network will never receive them regardless of this setting. |
+| `realtime.weather.tempest.extrafields.illuminance` | boolean |  |
+| `realtime.weather.tempest.extrafields.uvindex` | boolean |  |
+| `realtime.weather.tempest.extrafields.solarradiation` | boolean |  |
+| `realtime.weather.tempest.extrafields.lightningdistance` | boolean |  |
+| `realtime.weather.tempest.extrafields.lightningcount` | boolean |  |
+| `realtime.weather.tempest.extrafields.windlull` | boolean |  |
 | `realtime.speciestracking.enabled` | boolean | true to enable new species tracking |
 | `realtime.speciestracking.newspecieswindowdays` | integer | Days to consider a species "new" (default: 7) |
 | `realtime.speciestracking.syncintervalminutes` | integer | Interval to sync with database (default: 60) |
