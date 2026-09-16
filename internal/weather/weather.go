@@ -299,6 +299,33 @@ type Service struct {
 	// is not silently replaced on its first fetch cycle. NewService sets this
 	// true immediately since its provider/providerName already match settings.
 	providerBaselined bool
+
+	// startCtx is the long-lived context StartPolling derives from its
+	// stopChan, set once polling begins. reconcileConfig needs it (rather than
+	// the ctx passed into the current fetch cycle) to start a Lifecycler
+	// provider swapped in mid-run: the per-cycle ctx from an on-demand Poll()
+	// call is cancelled as soon as that call returns, which would kill a
+	// background listener (e.g. Tempest's UDP socket) moments after starting
+	// it. nil until StartPolling has actually run once.
+	startCtxMu sync.RWMutex
+	startCtx   context.Context
+}
+
+// setStartCtx records the long-lived context StartPolling is running under,
+// so reconcileConfig can bind a mid-run Lifecycler provider swap to it.
+func (s *Service) setStartCtx(ctx context.Context) {
+	s.startCtxMu.Lock()
+	s.startCtx = ctx
+	s.startCtxMu.Unlock()
+}
+
+// getStartCtx returns the context set by setStartCtx, or nil if StartPolling
+// has not run yet (e.g. reconcileConfig triggered only via an on-demand Poll()
+// before the background poll loop started).
+func (s *Service) getStartCtx() context.Context {
+	s.startCtxMu.RLock()
+	defer s.startCtxMu.RUnlock()
+	return s.startCtx
 }
 
 // setProvider atomically replaces the active provider implementation and name.
@@ -702,6 +729,12 @@ func (s *Service) StartPolling(stopChan <-chan struct{}) {
 		logger.String("provider", s.activeProviderName()),
 		logger.Int("interval_minutes", s.settings.Realtime.Weather.PollInterval))
 
+	// Recorded so reconcileConfig can start a Lifecycler provider swapped in on
+	// a later cycle (e.g. switching to Tempest mid-run) with the same
+	// long-lived lifetime as the provider active here at startup, rather than a
+	// short-lived on-demand Poll() ctx.
+	s.setStartCtx(ctx)
+
 	// Providers that receive data in the background (e.g. Tempest's local UDP
 	// listener) get started here, tied to the same ctx as every fetch cycle
 	// below, so they stop automatically when polling stops.
@@ -839,6 +872,21 @@ func (s *Service) reconcileConfig(settings *conf.Settings) {
 				logger.String("new_provider", newProviderName))
 			s.setProvider(newProvider, newProviderName)
 			previousProviderName = newProviderName
+
+			// StartPolling's Lifecycler check only runs once, against whichever
+			// provider was active when polling began, so a background-push
+			// provider (e.g. Tempest) switched to here must be started itself or
+			// it would never receive data until a restart. Skip silently if
+			// polling hasn't started yet (getStartCtx returns nil): the eventual
+			// StartPolling call will pick up this already-swapped provider via
+			// its own one-time check.
+			if lc, ok := newProvider.(Lifecycler); ok {
+				if startCtx := s.getStartCtx(); startCtx != nil {
+					getLogger().Info("Starting newly switched-in background weather provider",
+						logger.String("provider", newProviderName))
+					lc.Start(startCtx)
+				}
+			}
 		}
 	}
 
