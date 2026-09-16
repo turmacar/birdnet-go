@@ -70,7 +70,7 @@ func TestLivenessNotifier_CriticalBypassesCoalescing(t *testing.T) {
 
 			const calls = 6
 			for range calls {
-				n.notify("rtsp_camera", tc.state, "retries exhausted")
+				n.notify("rtsp_camera", "Front Yard Camera", tc.state, "retries exhausted")
 			}
 
 			require.Len(t, *sent, calls, "every critical event must be sent, none coalesced")
@@ -95,7 +95,7 @@ func TestLivenessNotifier_TransientCoalesced(t *testing.T) {
 	msgs := []string{"silence detected", "recovered"}
 	events := livenessBurstThreshold + 8
 	for i := range events {
-		n.notify("rtsp_camera", states[i%2], msgs[i%2])
+		n.notify("rtsp_camera", "Front Yard Camera", states[i%2], msgs[i%2])
 	}
 
 	// First `threshold` events pass individually, the (threshold+1)th becomes a
@@ -110,7 +110,9 @@ func TestLivenessNotifier_TransientCoalesced(t *testing.T) {
 	summary := (*sent)[livenessBurstThreshold]
 	assert.Equal(t, notification.PriorityHigh, summary.priority)
 	assert.Contains(t, summary.title, "flapping")
-	assert.Contains(t, summary.body, "rtsp_camera")
+	assert.Contains(t, summary.body, "Front Yard Camera")
+	assert.NotContains(t, summary.body, "rtsp_camera",
+		"notification text must use the friendly display name, not the internal source ID")
 	// The summary must report the coalesced count and window, not just a label.
 	assert.Contains(t, summary.body, fmt.Sprintf("%d", livenessBurstThreshold+1))
 	assert.Contains(t, summary.body, fmt.Sprintf("%d min", int(livenessBurstWindow.Minutes())))
@@ -124,17 +126,17 @@ func TestLivenessNotifier_IndependentPerSource(t *testing.T) {
 
 	// Exhaust source A's budget entirely.
 	for range livenessBurstThreshold + 8 {
-		n.notify("source_a", audiocore.StateAlarmed, "silence detected")
+		n.notify("source_a", "Camera A", audiocore.StateAlarmed, "silence detected")
 	}
 	countAfterA := len(*sent)
 
 	// Source B's first alarm must still come through individually.
-	n.notify("source_b", audiocore.StateAlarmed, "silence detected")
+	n.notify("source_b", "Camera B", audiocore.StateAlarmed, "silence detected")
 
 	require.Len(t, *sent, countAfterA+1)
 	last := (*sent)[len(*sent)-1]
 	assert.Equal(t, notification.PriorityHigh, last.priority)
-	assert.Contains(t, last.body, "source_b")
+	assert.Contains(t, last.body, "Camera B")
 	assert.Equal(t, "Audio source silence detected", last.title)
 }
 
@@ -148,16 +150,16 @@ func TestLivenessNotifier_EscalationResetsCoalescing(t *testing.T) {
 
 	// Flap enough to exhaust the silence budget so transient events are suppressed.
 	for range livenessBurstThreshold + 5 {
-		n.notify("rtsp_camera", audiocore.StateAlarmed, "silence detected")
+		n.notify("rtsp_camera", "Front Yard Camera", audiocore.StateAlarmed, "silence detected")
 	}
 	// A recovery now would be swallowed: the burst window is still open.
-	n.notify("rtsp_camera", audiocore.StateHealthy, "recovered")
+	n.notify("rtsp_camera", "Front Yard Camera", audiocore.StateHealthy, "recovered")
 	require.Zero(t, countTitle(*sent, "Audio source recovered"),
 		"precondition: recovery is suppressed while the burst window is open")
 
 	// The source escalates to a critical outage, then recovers.
-	n.notify("rtsp_camera", audiocore.StateFailed, "escalation timeout elapsed")
-	n.notify("rtsp_camera", audiocore.StateHealthy, "recovered")
+	n.notify("rtsp_camera", "Front Yard Camera", audiocore.StateFailed, "escalation timeout elapsed")
+	n.notify("rtsp_camera", "Front Yard Camera", audiocore.StateHealthy, "recovered")
 
 	// The post-critical all-clear must be delivered (Reset cleared the window).
 	assert.Equal(t, 1, countTitle(*sent, "Audio source recovered"),

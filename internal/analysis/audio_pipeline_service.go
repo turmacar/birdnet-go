@@ -325,7 +325,11 @@ func (p *AudioPipelineService) Start(_ context.Context) error {
 			}
 		},
 		Notify: func(sourceID string, state audiocore.LivenessState, msg string) {
-			livenessNotif.notify(sourceID, state, msg)
+			displayName := sourceID
+			if src, ok := p.engine.Registry().Get(sourceID); ok && src.DisplayName != "" {
+				displayName = src.DisplayName
+			}
+			livenessNotif.notify(sourceID, displayName, state, msg)
 		},
 		IsQuietHours: func(sourceID string) bool {
 			if p.quietHoursScheduler == nil {

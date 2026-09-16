@@ -71,6 +71,43 @@ func TestManager_StartStopStream(t *testing.T) {
 	assert.Contains(t, err.Error(), "no stream found")
 }
 
+// TestManager_StreamErrorsUseDisplayNameNotID is a regression test for a bug
+// where StartStream/StopStream/RestartStream error messages embedded the raw
+// opaque source-ID hash (e.g. "rtsp_d13dfe45") instead of the friendly
+// SourceName. These errors are EnhancedErrors with Component set, so their
+// Error() text reaches user-facing notifications verbatim (see
+// internal/notification/error_integration.go) — the hash must never appear in
+// that text, only in the (non-user-facing) Context metadata.
+func TestManager_StreamErrorsUseDisplayNameNotID(t *testing.T) {
+	t.Attr("component", "ffmpeg-manager")
+
+	mgr := newTestManager(t)
+	t.Cleanup(func() { _ = mgr.Shutdown() })
+
+	const sourceID = "rtsp_d13dfe45"
+	cfg := newTestManagerSpec(sourceID, "rtsp://test.example.com/stream")
+	cfg.SourceName = "Front Yard Camera" // display name deliberately unrelated to sourceID
+	require.NoError(t, mgr.StartStream(cfg))
+
+	// Starting the same sourceID again must name the friendly SourceName, not the ID.
+	err := mgr.StartStream(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), cfg.SourceName)
+	assert.NotContains(t, err.Error(), sourceID)
+
+	require.NoError(t, mgr.StopStream(sourceID))
+
+	// Stopping/restarting a now-missing stream has no config to draw a name
+	// from; the message must simply omit the ID rather than fall back to it.
+	err = mgr.StopStream(sourceID)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), sourceID)
+
+	err = mgr.RestartStream(sourceID)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), sourceID)
+}
+
 // TestManager_ReconfigureStream starts a stream, reconfigures it with new settings,
 // and verifies the updated config is reflected in the stream's health state.
 func TestManager_ReconfigureStream(t *testing.T) {

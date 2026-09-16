@@ -57,8 +57,12 @@ func newLivenessNotifier(send livenessNotifySender) *livenessNotifier {
 }
 
 // notify dispatches a watchdog state change to the user, coalescing transient
-// flapping but never suppressing a genuinely-down source.
-func (n *livenessNotifier) notify(sourceID string, state audiocore.LivenessState, msg string) {
+// flapping but never suppressing a genuinely-down source. sourceID is the
+// opaque source-ID hash (e.g. "rtsp_d13dfe45", see audiocore.generateSourceID)
+// used to key the burst tracker; displayName is the user-facing label shown in
+// the notification text (falls back to sourceID when a source has no
+// configured display name).
+func (n *livenessNotifier) notify(sourceID, displayName string, state audiocore.LivenessState, msg string) {
 	// Escalated/failed mean the source did not recover on its own; always alert
 	// immediately and bypass coalescing so a real outage is never hidden. Reset the
 	// burst window as well, so the "recovered" all-clear that follows a critical
@@ -66,7 +70,7 @@ func (n *livenessNotifier) notify(sourceID string, state audiocore.LivenessState
 	// that preceded the escalation.
 	if state == audiocore.StateEscalated || state == audiocore.StateFailed {
 		n.burst.Reset(sourceID, livenessBurstCategory)
-		n.send(notification.PriorityCritical, "Audio source "+msg, "Source "+sourceID+": "+msg)
+		n.send(notification.PriorityCritical, "Audio source "+msg, "Source "+displayName+": "+msg)
 		return
 	}
 
@@ -74,7 +78,7 @@ func (n *livenessNotifier) notify(sourceID string, state audiocore.LivenessState
 	action, summary := n.burst.Record(sourceID, livenessBurstCategory, msg)
 	switch action {
 	case notification.BurstActionAllow:
-		n.send(notification.PriorityHigh, "Audio source "+msg, "Source "+sourceID+": "+msg)
+		n.send(notification.PriorityHigh, "Audio source "+msg, "Source "+displayName+": "+msg)
 	case notification.BurstActionSummary:
 		// One summary stands in for the rest of the window. Say the source is
 		// unstable (not down) and point at the dashboard, since further transient
@@ -83,7 +87,7 @@ func (n *livenessNotifier) notify(sourceID string, state audiocore.LivenessState
 		// delivered rather than grouped.)
 		body := fmt.Sprintf("Source %s is unstable: %d silence/recovery events in %d min. "+
 			"Further alerts are grouped to reduce noise; see the dashboard for live status.",
-			sourceID, summary.Count, summary.WindowMin)
+			displayName, summary.Count, summary.WindowMin)
 		n.send(notification.PriorityHigh, "Audio source flapping", body)
 	case notification.BurstActionSuppress:
 		// Already summarized this window; drop to avoid notification spam.
