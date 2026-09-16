@@ -204,7 +204,7 @@ func (m *Manager) startStreamWithConfig(cfg *StreamConfig) error {
 	m.mu.Lock()
 	if _, exists := m.streams[cfg.SourceID]; exists {
 		m.mu.Unlock()
-		return errors.Newf("stream already exists for sourceID: %s", cfg.SourceID).
+		return errors.Newf("stream already exists: %s", cfg.SourceName).
 			Category(errors.CategoryValidation).
 			Component("ffmpeg-manager").
 			Context("operation", "start_stream").
@@ -267,7 +267,10 @@ func (m *Manager) StopStream(sourceID string) error {
 	if !exists {
 		activeCount := len(m.streams)
 		m.mu.Unlock()
-		return errors.Newf("no stream found for sourceID: %s", sourceID).
+		// No config for a stream that was never registered, so the message names
+		// no source at all rather than falling back to the opaque source-ID hash;
+		// the ID is still recorded in Context for logs/telemetry.
+		return errors.Newf("no stream found to stop").
 			Category(errors.CategoryValidation).
 			Component("ffmpeg-manager").
 			Context("operation", "stop_stream").
@@ -309,7 +312,10 @@ func (m *Manager) RestartStream(sourceID string) error {
 	m.mu.RUnlock()
 
 	if !exists {
-		return errors.Newf("no stream found for sourceID: %s", sourceID).
+		// No config for a stream that was never registered, so the message names
+		// no source at all rather than falling back to the opaque source-ID hash;
+		// the ID is still recorded in Context for logs/telemetry.
+		return errors.Newf("no stream found to restart").
 			Category(errors.CategoryValidation).
 			Component("ffmpeg-manager").
 			Context("operation", "restart_stream").
