@@ -48,6 +48,9 @@ export const pirateWeatherDefaults: PirateWeatherSettings = {
  */
 export const tempestDefaults: TempestSettings = {
   listenAddress: '',
+  token: '',
+  stationId: '',
+  endpoint: 'https://swd.weatherflow.com/swd/rest/better_forecast',
   extraFields: {
     illuminance: false,
     uvIndex: false,

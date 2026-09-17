@@ -3421,8 +3421,9 @@
           "openweather": "Användning av OpenWeather kräver en API-nyckel, registrera dig för en gratis API-nyckel på <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Kräver en Weather Underground API-nyckel och ett giltigt PWS-stations-ID. Se <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> för detaljer.",
           "pirateweather": "Användning av Pirate Weather kräver en API-nyckel, registrera dig på <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Läser realtidsobservationer som sänds lokalt via UDP av en Tempest/WeatherFlow-väderstation på ditt nätverk. Ingen API-nyckel, inget konto eller internetanslutning krävs.",
-          "tempestNetworking": "Kräver att birdnet-go-containern delar ditt LAN:s broadcast-domän (t.ex. Dockers <code>host</code>-nätverk eller ett ipvlan/macvlan-nätverk som Unraids <code>br0</code>). Ett vanligt Docker-bridge-nätverk kommer aldrig att ta emot dessa broadcaster, oavsett denna inställning."
+          "tempest": "Läser sensorobservationer direkt från en Tempest/WeatherFlow-väderstation via lokal UDP. Lokala mätvärden kräver inget konto eller någon internetanslutning; valfria molnuppgifter lägger till himmelsförhållanden.",
+          "tempestNetworking": "Kräver att birdnet-go-containern delar ditt LAN:s broadcast-domän (t.ex. Dockers <code>host</code>-nätverk eller ett ipvlan/macvlan-nätverk som Unraids <code>br0</code>). Ett vanligt Docker-bridge-nätverk kommer aldrig att ta emot dessa broadcaster, oavsett denna inställning.",
+          "tempestCloud": "Det lokala UDP-flödet innehåller inte himmelsförhållanden. Konfigurera ett WeatherFlow-stations-ID och en personlig åtkomsttoken nedan för att visa Klart, Molnigt, Dimma och liknande förhållanden för detektioner. Sensorvärdena kommer även fortsättningsvis från den lokala stationen."
         },
         "apiKey": {
           "label": "API-nyckel",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "UDP-lyssningsadress",
             "helpText": "Lokal UDP-adress att lyssna på för Tempest hub-sändningar. Lämna tomt för att använda standardvärdet \":50222\" (WeatherFlows fasta broadcast-port)."
+          },
+          "stationId": {
+            "label": "WeatherFlow-stations-ID",
+            "helpText": "Valfritt. Ange stationens numeriska ID tillsammans med en personlig åtkomsttoken för att hämta himmelsförhållanden."
+          },
+          "token": {
+            "label": "Personlig åtkomsttoken för WeatherFlow",
+            "helpText": "Valfritt. Skapa en token i Tempest Web App under Settings > Data Authorizations. Håll den hemlig."
+          },
+          "endpoint": {
+            "label": "WeatherFlow API-slutpunkt",
+            "helpText": "Åsidosätt vid behov standardslutpunkten för WeatherFlow-molnet. Lämna den oförändrad vid normal användning."
           },
           "extraFields": {
             "title": "Ytterligare stationsdata",

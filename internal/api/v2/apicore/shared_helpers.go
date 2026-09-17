@@ -121,3 +121,17 @@ func RestoreRedactedSecret(current string, incoming *string) {
 		*incoming = current
 	}
 }
+
+// RestoreRedactedSecretForEndpoint restores a redacted secret only when its
+// destination endpoint is unchanged. It returns false when re-entry is required
+// so a stored credential can never be forwarded to a newly configured host.
+func RestoreRedactedSecretForEndpoint(currentSecret, currentEndpoint, incomingEndpoint string, incomingSecret *string) bool {
+	if incomingSecret == nil || *incomingSecret != RedactedValue {
+		return true
+	}
+	if currentEndpoint != incomingEndpoint {
+		return false
+	}
+	*incomingSecret = currentSecret
+	return true
+}

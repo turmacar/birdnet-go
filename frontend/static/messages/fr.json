@@ -3421,8 +3421,9 @@
           "openweather": "L'utilisation d'OpenWeather nécessite une clé API, inscrivez-vous pour obtenir une clé API gratuite sur <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Nécessite une clé API Weather Underground et un ID de station PWS valide. Voir <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> pour plus de détails.",
           "pirateweather": "L'utilisation de Pirate Weather nécessite une clé API, inscrivez-vous sur <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Lit les observations en direct diffusées localement en UDP par une station météo Tempest/WeatherFlow sur votre réseau. Aucune clé API, aucun compte ni connexion internet requis.",
-          "tempestNetworking": "Nécessite que le conteneur birdnet-go partage le domaine de diffusion de votre réseau local (par exemple le réseau <code>host</code> de Docker ou un réseau ipvlan/macvlan comme le <code>br0</code> d'Unraid). Un réseau bridge Docker standard ne recevra jamais ces diffusions, quel que soit ce paramètre."
+          "tempest": "Lit les observations des capteurs directement depuis une station météo Tempest/WeatherFlow via UDP local. Les mesures locales ne nécessitent ni compte ni connexion Internet ; des identifiants cloud facultatifs ajoutent l’état du ciel.",
+          "tempestNetworking": "Nécessite que le conteneur birdnet-go partage le domaine de diffusion de votre réseau local (par exemple le réseau <code>host</code> de Docker ou un réseau ipvlan/macvlan comme le <code>br0</code> d'Unraid). Un réseau bridge Docker standard ne recevra jamais ces diffusions, quel que soit ce paramètre.",
+          "tempestCloud": "Le flux UDP local n’inclut pas l’état du ciel. Pour afficher Ciel dégagé, Nuageux, Brouillard et des conditions similaires sur les détections, configurez ci-dessous un identifiant de station WeatherFlow et un jeton d’accès personnel. Les mesures des capteurs continuent de provenir de la station locale."
         },
         "apiKey": {
           "label": "Clé API",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "Adresse d'écoute UDP",
             "helpText": "Adresse UDP locale sur laquelle écouter les diffusions du hub Tempest. Laissez vide pour utiliser la valeur par défaut \":50222\" (le port de diffusion fixe de WeatherFlow)."
+          },
+          "stationId": {
+            "label": "Identifiant de station WeatherFlow",
+            "helpText": "Facultatif. Saisissez l’identifiant numérique de votre station ainsi qu’un jeton d’accès personnel pour récupérer l’état du ciel."
+          },
+          "token": {
+            "label": "Jeton d’accès personnel WeatherFlow",
+            "helpText": "Facultatif. Créez un jeton dans l’application Web Tempest sous Settings > Data Authorizations. Gardez-le secret."
+          },
+          "endpoint": {
+            "label": "Point de terminaison de l’API WeatherFlow",
+            "helpText": "Remplacez si nécessaire le point de terminaison cloud WeatherFlow par défaut. Laissez-le inchangé pour une utilisation normale."
           },
           "extraFields": {
             "title": "Données supplémentaires de la station",

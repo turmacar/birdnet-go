@@ -3421,8 +3421,9 @@
           "openweather": "Użycie OpenWeather wymaga klucza API, zarejestruj się po bezpłatny klucz API na <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Wymaga klucza API Weather Underground i prawidłowego ID stacji PWS. Zobacz <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> dla szczegółów.",
           "pirateweather": "Użycie Pirate Weather wymaga klucza API, zarejestruj się na <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Odczytuje na żywo obserwacje nadawane lokalnie przez UDP przez stację pogodową Tempest/WeatherFlow w Twojej sieci. Nie jest wymagany klucz API, konto ani połączenie internetowe.",
-          "tempestNetworking": "Wymaga, aby kontener birdnet-go współdzielił domenę rozgłoszeniową Twojej sieci LAN (np. sieć Docker <code>host</code> lub sieć ipvlan/macvlan, taką jak <code>br0</code> w Unraid). Standardowa sieć mostkowa Docker nigdy nie odbierze tych transmisji, niezależnie od tego ustawienia."
+          "tempest": "Odczytuje dane z czujników bezpośrednio ze stacji pogodowej Tempest/WeatherFlow przez lokalne UDP. Lokalne pomiary nie wymagają konta ani połączenia z Internetem; opcjonalne dane logowania do chmury dodają informacje o stanie nieba.",
+          "tempestNetworking": "Wymaga, aby kontener birdnet-go współdzielił domenę rozgłoszeniową Twojej sieci LAN (np. sieć Docker <code>host</code> lub sieć ipvlan/macvlan, taką jak <code>br0</code> w Unraid). Standardowa sieć mostkowa Docker nigdy nie odbierze tych transmisji, niezależnie od tego ustawienia.",
+          "tempestCloud": "Lokalny strumień UDP nie zawiera informacji o stanie nieba. Aby przy wykryciach wyświetlać warunki takie jak Bezchmurnie, Pochmurno czy Mgła, skonfiguruj poniżej identyfikator stacji WeatherFlow i osobisty token dostępu. Odczyty z czujników nadal pochodzą ze stacji lokalnej."
         },
         "apiKey": {
           "label": "Klucz API",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "Adres nasłuchu UDP",
             "helpText": "Lokalny adres UDP nasłuchujący transmisji z huba Tempest. Pozostaw puste, aby użyć domyślnej wartości \":50222\" (stały port transmisji WeatherFlow)."
+          },
+          "stationId": {
+            "label": "Identyfikator stacji WeatherFlow",
+            "helpText": "Opcjonalnie. Wprowadź numeryczny identyfikator stacji wraz z osobistym tokenem dostępu, aby pobierać informacje o stanie nieba."
+          },
+          "token": {
+            "label": "Osobisty token dostępu WeatherFlow",
+            "helpText": "Opcjonalnie. Utwórz token w aplikacji internetowej Tempest w sekcji Settings > Data Authorizations. Zachowaj go w tajemnicy."
+          },
+          "endpoint": {
+            "label": "Punkt końcowy API WeatherFlow",
+            "helpText": "W razie potrzeby zastąp domyślny punkt końcowy chmury WeatherFlow. W przypadku normalnego użytkowania pozostaw go bez zmian."
           },
           "extraFields": {
             "title": "Dodatkowe dane stacji",

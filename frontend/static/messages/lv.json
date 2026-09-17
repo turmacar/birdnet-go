@@ -3421,8 +3421,9 @@
           "openweather": "OpenWeather izmantošanai nepieciešama API atslēga. Reģistrējieties bezmaksas API atslēgai <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Nepieciešama Weather Underground API atslēga un derīgs PWS stacijas ID. Skatiet <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> detaļām.",
           "pirateweather": "Pirate Weather izmantošanai nepieciešama API atslēga, reģistrējieties vietnē <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Lasa reāllaika novērojumus, ko jūsu tīklā lokāli pa UDP pārraida Tempest/WeatherFlow laikapstākļu stacija. Nav nepieciešama API atslēga, konts vai interneta savienojums.",
-          "tempestNetworking": "Nepieciešams, lai birdnet-go konteiners koplietotu jūsu LAN apraides domēnu (piemēram, Docker <code>host</code> tīklu vai ipvlan/macvlan tīklu, piemēram, Unraid <code>br0</code>). Standarta Docker bridge tīkls nekad nesaņems šīs apraides neatkarīgi no šī iestatījuma."
+          "tempest": "Nolasa sensoru novērojumus tieši no Tempest/WeatherFlow meteoroloģiskās stacijas, izmantojot lokālo UDP. Lokālajiem mērījumiem nav nepieciešams konts vai interneta savienojums; neobligātie mākoņpakalpojuma akreditācijas dati pievieno debess apstākļus.",
+          "tempestNetworking": "Nepieciešams, lai birdnet-go konteiners koplietotu jūsu LAN apraides domēnu (piemēram, Docker <code>host</code> tīklu vai ipvlan/macvlan tīklu, piemēram, Unraid <code>br0</code>). Standarta Docker bridge tīkls nekad nesaņems šīs apraides neatkarīgi no šī iestatījuma.",
+          "tempestCloud": "Lokālā UDP datu plūsma neietver debess apstākļus. Lai noteikumiem pievienotu tādus apstākļus kā Skaidrs, Mākoņains, Migla un citus, tālāk konfigurējiet WeatherFlow stacijas ID un personīgo piekļuves pilnvaru. Sensoru rādījumi joprojām tiks saņemti no lokālās stacijas."
         },
         "apiKey": {
           "label": "API atslēga",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "UDP klausīšanās adrese",
             "helpText": "Lokālā UDP adrese, kurā klausīties Tempest centra apraides. Atstājiet tukšu, lai izmantotu noklusējuma vērtību \":50222\" (WeatherFlow fiksētais apraides ports)."
+          },
+          "stationId": {
+            "label": "WeatherFlow stacijas ID",
+            "helpText": "Neobligāti. Lai iegūtu debess apstākļus, ievadiet savas stacijas skaitlisko ID kopā ar personīgo piekļuves pilnvaru."
+          },
+          "token": {
+            "label": "WeatherFlow personīgā piekļuves pilnvara",
+            "helpText": "Neobligāti. Izveidojiet pilnvaru Tempest Web App sadaļā Settings > Data Authorizations. Glabājiet to slepenībā."
+          },
+          "endpoint": {
+            "label": "WeatherFlow API galapunkts",
+            "helpText": "Ja nepieciešams, pārrakstiet WeatherFlow mākoņpakalpojuma noklusējuma galapunktu. Parastai lietošanai atstājiet to nemainītu."
           },
           "extraFields": {
             "title": "Papildu stacijas dati",

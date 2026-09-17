@@ -130,7 +130,7 @@ const maskedURLOnError = "[unparseable-url-redacted]"
 // apiKey for Wunderground) authenticate the account, and the coordinates
 // (lat/lon, used by OpenWeather and yr.no) are PII that reveal the user's
 // location, so neither may reach a log sink in cleartext.
-var sensitiveQueryParams = []string{"appid", "apiKey", "lat", "lon"}
+var sensitiveQueryParams = []string{"appid", "apiKey", "token", "lat", "lon"}
 
 // maskURLForLog returns a log-safe representation of a weather provider request
 // URL. It redacts the API key and the location coordinates while preserving

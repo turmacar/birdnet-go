@@ -3421,8 +3421,9 @@
           "openweather": "OpenWeatherin käyttö vaatii API-avaimen, rekisteröidy ilmaiselle API-avaimelle osoitteessa <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Vaatii Weather Underground API-avaimen ja kelvollisen PWS-asematunnuksen. Katso lisätietoja <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a>.",
           "pirateweather": "Pirate Weatherin käyttö vaatii API-avaimen, rekisteröidy osoitteessa <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Lukee reaaliaikaisia havaintoja, jotka Tempest/WeatherFlow-sääasema lähettää paikallisesti UDP:n kautta verkossasi. API-avainta, tiliä tai internetyhteyttä ei tarvita.",
-          "tempestNetworking": "Edellyttää, että birdnet-go-kontti jakaa lähiverkkosi lähetysalueen (esim. Dockerin <code>host</code>-verkko tai ipvlan/macvlan-verkko, kuten Unraidin <code>br0</code>). Tavallinen Docker-bridge-verkko ei koskaan vastaanota näitä lähetyksiä tästä asetuksesta riippumatta."
+          "tempest": "Lukee anturihavainnot suoraan Tempest/WeatherFlow-sääasemalta paikallisen UDP-yhteyden kautta. Paikalliset mittaukset eivät vaadi tiliä tai internetyhteyttä; valinnaiset pilvipalvelun tunnukset lisäävät taivaan olosuhteet.",
+          "tempestNetworking": "Edellyttää, että birdnet-go-kontti jakaa lähiverkkosi lähetysalueen (esim. Dockerin <code>host</code>-verkko tai ipvlan/macvlan-verkko, kuten Unraidin <code>br0</code>). Tavallinen Docker-bridge-verkko ei koskaan vastaanota näitä lähetyksiä tästä asetuksesta riippumatta.",
+          "tempestCloud": "Paikallinen UDP-syöte ei sisällä taivaan olosuhteita. Jos haluat näyttää havaintojen yhteydessä selkeän, pilvisen, sumuisen ja muut vastaavat olosuhteet, määritä alle WeatherFlow-aseman tunnus ja henkilökohtainen käyttöoikeustunnus. Anturilukemat saadaan edelleen paikalliselta asemalta."
         },
         "apiKey": {
           "label": "API-avain",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "UDP-kuunteluosoite",
             "helpText": "Paikallinen UDP-osoite, jota kuunnellaan Tempest-hubin lähetyksiä varten. Jätä tyhjäksi käyttääksesi oletusarvoa \":50222\" (WeatherFlow'n kiinteä lähetysportti)."
+          },
+          "stationId": {
+            "label": "WeatherFlow-aseman tunnus",
+            "helpText": "Valinnainen. Hae taivaan olosuhteet syöttämällä asemasi numerotunnus ja henkilökohtainen käyttöoikeustunnus."
+          },
+          "token": {
+            "label": "WeatherFlow'n henkilökohtainen käyttöoikeustunnus",
+            "helpText": "Valinnainen. Luo tunnus Tempest Web Appissa kohdassa Settings > Data Authorizations. Pidä tunnus salassa."
+          },
+          "endpoint": {
+            "label": "WeatherFlow-API-päätepiste",
+            "helpText": "Korvaa tarvittaessa WeatherFlow'n pilvipalvelun oletuspäätepiste. Jätä se ennalleen normaalissa käytössä."
           },
           "extraFields": {
             "title": "Aseman lisätiedot",

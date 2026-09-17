@@ -44,6 +44,12 @@ func TestMaskURLForLog(t *testing.T) {
 			mustContain:    []string{"api.weather.com", "MASKED", "stationId=KTEST123", "format=json"},
 		},
 		{
+			name:           "weatherflow masks token, keeps station ID",
+			url:            "https://swd.weatherflow.com/swd/rest/better_forecast?station_id=12345&token=" + secret + "&units_temp=c",
+			mustNotContain: []string{secret},
+			mustContain:    []string{"swd.weatherflow.com", "MASKED", "station_id=12345", "units_temp=c"},
+		},
+		{
 			name:           "yrno masks bare coordinates",
 			url:            "https://api.met.no/weatherapi/locationforecast/2.0/complete?lat=60.170&lon=24.938",
 			mustNotContain: []string{"60.170", "24.938"},

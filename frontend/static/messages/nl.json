@@ -3421,8 +3421,9 @@
           "openweather": "Gebruik van OpenWeather vereist een API sleutel, registreer voor een gratis API sleutel bij <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Vereist een Weather Underground API sleutel en een geldig PWS station ID. Zie <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> voor details.",
           "pirateweather": "Gebruik van Pirate Weather vereist een API sleutel, registreer bij <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Leest live waarnemingen die lokaal via UDP worden uitgezonden door een Tempest/WeatherFlow-weerstation op uw netwerk. Geen API-sleutel, account of internetverbinding vereist.",
-          "tempestNetworking": "Vereist dat de birdnet-go-container het broadcastdomein van uw LAN deelt (bijv. Docker <code>host</code>-netwerk of een ipvlan/macvlan-netwerk zoals Unraid's <code>br0</code>). Een standaard Docker bridge-netwerk zal deze broadcasts nooit ontvangen, ongeacht deze instelling."
+          "tempest": "Leest sensorwaarnemingen rechtstreeks van een Tempest/WeatherFlow-weerstation via lokale UDP. Voor lokale metingen zijn geen account of internetverbinding nodig; optionele cloudreferenties voegen luchtcondities toe.",
+          "tempestNetworking": "Vereist dat de birdnet-go-container het broadcastdomein van uw LAN deelt (bijv. Docker <code>host</code>-netwerk of een ipvlan/macvlan-netwerk zoals Unraid's <code>br0</code>). Een standaard Docker bridge-netwerk zal deze broadcasts nooit ontvangen, ongeacht deze instelling.",
+          "tempestCloud": "De lokale UDP-feed bevat geen luchtcondities. Configureer hieronder een WeatherFlow-station-ID en een persoonlijk toegangstoken om Helder, Bewolkt, Mist en vergelijkbare condities bij detecties weer te geven. De sensormetingen blijven afkomstig van het lokale station."
         },
         "apiKey": {
           "label": "API Sleutel",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "UDP-luisteradres",
             "helpText": "Lokaal UDP-adres om te luisteren naar Tempest hub-broadcasts. Laat leeg om de standaardwaarde \":50222\" te gebruiken (WeatherFlow's vaste broadcastpoort)."
+          },
+          "stationId": {
+            "label": "WeatherFlow-station-ID",
+            "helpText": "Optioneel. Voer de numerieke ID van je station samen met een persoonlijk toegangstoken in om de luchtcondities op te halen."
+          },
+          "token": {
+            "label": "Persoonlijk toegangstoken voor WeatherFlow",
+            "helpText": "Optioneel. Maak in de Tempest Web App onder Settings > Data Authorizations een token aan. Houd dit geheim."
+          },
+          "endpoint": {
+            "label": "WeatherFlow API-eindpunt",
+            "helpText": "Overschrijf indien nodig het standaard cloud-eindpunt van WeatherFlow. Laat dit ongewijzigd voor normaal gebruik."
           },
           "extraFields": {
             "title": "Aanvullende stationsgegevens",

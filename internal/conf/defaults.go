@@ -283,6 +283,9 @@ func setDefaultConfig() {
 	viper.SetDefault("realtime.weather.tempest.extrafields.lightningdistance", false)
 	viper.SetDefault("realtime.weather.tempest.extrafields.lightningcount", false)
 	viper.SetDefault("realtime.weather.tempest.extrafields.windlull", false)
+	viper.SetDefault("realtime.weather.tempest.token", "")
+	viper.SetDefault("realtime.weather.tempest.stationid", "")
+	viper.SetDefault("realtime.weather.tempest.endpoint", "https://swd.weatherflow.com/swd/rest/better_forecast")
 
 	// RTSP configuration
 	viper.SetDefault("realtime.rtsp.urls", []string{})

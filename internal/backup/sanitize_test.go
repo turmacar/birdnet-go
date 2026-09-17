@@ -35,6 +35,7 @@ func TestSanitizeConfigStripsEverySecret(t *testing.T) {
 		"openweather api key":   "SECRET-openweather",
 		"wunderground api key":  "SECRET-wunderground",
 		"pirateweather api key": "SECRET-pirateweather",
+		"tempest cloud token":   "SECRET-tempest-token",
 	}
 
 	settings := &conf.Settings{}
@@ -49,6 +50,7 @@ func TestSanitizeConfigStripsEverySecret(t *testing.T) {
 	settings.Realtime.Weather.OpenWeather.APIKey = secrets["openweather api key"]
 	settings.Realtime.Weather.Wunderground.APIKey = secrets["wunderground api key"]
 	settings.Realtime.Weather.PirateWeather.APIKey = secrets["pirateweather api key"]
+	settings.Realtime.Weather.Tempest.Token = secrets["tempest cloud token"]
 
 	// Prove the setup actually plants every secret, so a renamed field cannot
 	// turn this into a test that passes because it asserts on nothing.

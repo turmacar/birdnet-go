@@ -4,11 +4,14 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/tphakala/birdnet-go/internal/conf"
 )
 
 // sampleObsSTPacket returns a minimal but well-formed obs_st JSON payload
@@ -63,6 +66,96 @@ func TestParseTempestObsST_NoPrecipitation(t *testing.T) {
 	assert.Empty(t, data.Precipitation.Type)
 	assert.Equal(t, string(IconUnknown), data.Icon)
 	assert.Empty(t, data.WeatherMain)
+}
+
+func TestTempestProvider_FetchWeatherEnrichesSkyConditionFromCloud(t *testing.T) {
+	var requestPath string
+	var writeErr error
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPath = r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, writeErr = w.Write([]byte(`{"status":{"status_code":0,"status_message":"SUCCESS"},"current_conditions":{"conditions":"Partly Cloudy","icon":"partly-cloudy-day"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	provider := &TempestProvider{
+		httpClient: server.Client(),
+		latest: &WeatherData{
+			Temperature: Temperature{Current: 18.5},
+			Icon:        string(IconUnknown),
+		},
+		receivedAt: time.Now(),
+	}
+	settings := &conf.Settings{}
+	settings.Realtime.Weather.Tempest.StationID = "12345"
+	settings.Realtime.Weather.Tempest.Token = "cloud-token"
+	settings.Realtime.Weather.Tempest.Endpoint = server.URL
+
+	data, err := provider.FetchWeather(t.Context(), settings)
+
+	require.NoError(t, err)
+	require.NoError(t, writeErr)
+	assert.InDelta(t, 18.5, data.Temperature.Current, 0.001, "UDP observation remains authoritative")
+	assert.Equal(t, "Clouds", data.WeatherMain)
+	assert.Equal(t, "Partly Cloudy", data.Description)
+	assert.Equal(t, string(IconPartlyCloudy), data.Icon)
+	assert.Contains(t, requestPath, "station_id=12345")
+	assert.Contains(t, requestPath, "token=cloud-token")
+	assert.Contains(t, requestPath, "units_temp=c")
+}
+
+func TestTempestProvider_CloudFailureKeepsLocalObservation(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(server.Close)
+
+	provider := &TempestProvider{
+		httpClient: server.Client(),
+		latest: &WeatherData{
+			Temperature: Temperature{Current: 18.5},
+			Icon:        string(IconUnknown),
+		},
+		receivedAt: time.Now(),
+	}
+	settings := &conf.Settings{}
+	settings.Realtime.Weather.Tempest.StationID = "12345"
+	settings.Realtime.Weather.Tempest.Token = "cloud-token"
+	settings.Realtime.Weather.Tempest.Endpoint = server.URL
+
+	data, err := provider.FetchWeather(t.Context(), settings)
+
+	require.NoError(t, err)
+	assert.InDelta(t, 18.5, data.Temperature.Current, 0.001)
+	assert.Empty(t, data.WeatherMain)
+	assert.Equal(t, string(IconUnknown), data.Icon)
+	assert.Equal(t, 1, requests, "cloud enrichment must not retry and delay local persistence")
+}
+
+func TestFetchTempestCloudCondition_DoesNotFollowRedirects(t *testing.T) {
+	redirectTargetReached := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectTargetReached = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+
+	redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusFound)
+	}))
+	t.Cleanup(redirector.Close)
+
+	settings := &conf.Settings{}
+	settings.Realtime.Weather.Tempest.StationID = "12345"
+	settings.Realtime.Weather.Tempest.Token = "cloud-token"
+	settings.Realtime.Weather.Tempest.Endpoint = redirector.URL
+
+	_, _, _, err := FetchTempestCloudCondition(t.Context(), redirector.Client(), settings)
+
+	require.Error(t, err)
+	assert.False(t, redirectTargetReached)
 }
 
 func TestParseTempestObsST_Hail(t *testing.T) {

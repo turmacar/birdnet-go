@@ -3421,8 +3421,9 @@
           "openweather": "Používanie OpenWeather vyžaduje API kľúč, zaregistrujte sa pre bezplatný API kľúč na <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Vyžaduje API kľúč Weather Underground a platné ID stanice PWS. Podrobnosti nájdete na <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a>.",
           "pirateweather": "Používanie Pirate Weather vyžaduje API kľúč, zaregistrujte sa na <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Číta živé pozorovania vysielané lokálne cez UDP meteorologickou stanicou Tempest/WeatherFlow vo vašej sieti. Nevyžaduje sa API kľúč, účet ani internetové pripojenie.",
-          "tempestNetworking": "Vyžaduje, aby kontajner birdnet-go zdieľal vysielaciu doménu vašej LAN (napr. sieť Docker <code>host</code> alebo sieť ipvlan/macvlan, ako je Unraid <code>br0</code>). Štandardná sieť Docker bridge nikdy neprijme tieto vysielania bez ohľadu na toto nastavenie."
+          "tempest": "Načítava údaje zo senzorov priamo zo stanice Tempest/WeatherFlow cez miestne UDP. Miestne merania nevyžadujú účet ani internetové pripojenie; voliteľné prihlasovacie údaje do cloudu doplnia stav oblohy.",
+          "tempestNetworking": "Vyžaduje, aby kontajner birdnet-go zdieľal vysielaciu doménu vašej LAN (napr. sieť Docker <code>host</code> alebo sieť ipvlan/macvlan, ako je Unraid <code>br0</code>). Štandardná sieť Docker bridge nikdy neprijme tieto vysielania bez ohľadu na toto nastavenie.",
+          "tempestCloud": "Miestny prenos UDP neobsahuje stav oblohy. Ak chcete pri detekciách zobrazovať jasno, oblačno, hmlu a podobné podmienky, nastavte nižšie ID stanice WeatherFlow a osobný prístupový token. Údaje zo senzorov budú naďalej pochádzať z miestnej stanice."
         },
         "apiKey": {
           "label": "API kľúč",
@@ -3457,6 +3458,18 @@
           "listenAddress": {
             "label": "Adresa počúvania UDP",
             "helpText": "Lokálna UDP adresa, na ktorej sa má počúvať vysielanie hubu Tempest. Ponechajte prázdne pre použitie predvolenej hodnoty \":50222\" (pevný vysielací port WeatherFlow)."
+          },
+          "stationId": {
+            "label": "ID stanice WeatherFlow",
+            "helpText": "Voliteľné. Ak chcete získavať údaje o stave oblohy, zadajte číselné ID svojej stanice spolu s osobným prístupovým tokenom."
+          },
+          "token": {
+            "label": "Osobný prístupový token WeatherFlow",
+            "helpText": "Voliteľné. Vytvorte token vo webovej aplikácii Tempest v časti Settings > Data Authorizations. Uchovávajte ho v tajnosti."
+          },
+          "endpoint": {
+            "label": "Koncový bod API WeatherFlow",
+            "helpText": "V prípade potreby prepíšte predvolený cloudový koncový bod WeatherFlow. Pri bežnom používaní ho nemeňte."
           },
           "extraFields": {
             "title": "Doplňujúce údaje stanice",
