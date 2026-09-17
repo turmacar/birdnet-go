@@ -49,6 +49,8 @@ func settingsWithSecrets(t *testing.T) *conf.Settings {
 	// Weather API keys
 	s.Realtime.Weather.OpenWeather.APIKey = "ow-api-key-123"
 	s.Realtime.Weather.Wunderground.APIKey = "wu-api-key-456"
+	s.Realtime.Weather.Tempest.Token = "tempest-token-789"
+	s.Realtime.Weather.Tempest.StationID = "12345"
 
 	// eBird
 	s.Realtime.EBird.APIKey = "ebird-api-key-789"
@@ -142,6 +144,8 @@ func TestSanitizeSettingsForAPI_RedactsAllSecrets(t *testing.T) {
 	// --- Weather API keys ---
 	assert.Equal(t, redactedValue, sanitized.Realtime.Weather.OpenWeather.APIKey, "openWeather.apiKey must be redacted")
 	assert.Equal(t, redactedValue, sanitized.Realtime.Weather.Wunderground.APIKey, "wunderground.apiKey must be redacted")
+	assert.Equal(t, redactedValue, sanitized.Realtime.Weather.Tempest.Token, "tempest.token must be redacted")
+	assert.Equal(t, "12345", sanitized.Realtime.Weather.Tempest.StationID, "tempest.stationId should be preserved")
 
 	// --- eBird ---
 	assert.Equal(t, redactedValue, sanitized.Realtime.EBird.APIKey, "ebird.apiKey must be redacted")
@@ -274,6 +278,7 @@ func TestRestoreRedactedSecrets_PreservesRealValues(t *testing.T) {
 	incoming.Realtime.MQTT.Password = redactedValue
 	incoming.Output.MySQL.Password = redactedValue
 	incoming.Realtime.Weather.OpenWeather.APIKey = redactedValue
+	incoming.Realtime.Weather.Tempest.Token = redactedValue
 	incoming.Realtime.EBird.APIKey = redactedValue
 	incoming.Security.OAuthProviders[0].ClientSecret = redactedValue
 	incoming.Notification.Push.Providers[0].Endpoints[0].Auth.Token = redactedValue
@@ -288,6 +293,7 @@ func TestRestoreRedactedSecrets_PreservesRealValues(t *testing.T) {
 	assert.Equal(t, "mqtt-password", incoming.Realtime.MQTT.Password)
 	assert.Equal(t, "db-password", incoming.Output.MySQL.Password)
 	assert.Equal(t, "ow-api-key-123", incoming.Realtime.Weather.OpenWeather.APIKey)
+	assert.Equal(t, "tempest-token-789", incoming.Realtime.Weather.Tempest.Token)
 	assert.Equal(t, "ebird-api-key-789", incoming.Realtime.EBird.APIKey)
 	assert.Equal(t, "goog-secret", incoming.Security.OAuthProviders[0].ClientSecret)
 	assert.Equal(t, "bearer-token-secret", incoming.Notification.Push.Providers[0].Endpoints[0].Auth.Token)
@@ -610,4 +616,19 @@ func TestRestoreRedactedSecrets_FailsOnUnmatchedSentinel(t *testing.T) {
 	// The sentinel should be cleared to empty string, never persisted
 	assert.Empty(t, incoming.Notification.Push.Providers[0].Endpoints[0].Auth.Token,
 		"sentinel should be cleared to empty string")
+}
+
+func TestRestoreRedactedSecrets_FailsOnChangedTempestEndpoint(t *testing.T) {
+	t.Parallel()
+
+	current := settingsWithSecrets(t)
+	current.Realtime.Weather.Tempest.Endpoint = "https://swd.weatherflow.com/swd/rest/better_forecast"
+	incoming := settingsWithSecrets(t)
+	incoming.Realtime.Weather.Tempest.Endpoint = "https://other.example.com/forecast"
+	incoming.Realtime.Weather.Tempest.Token = redactedValue
+
+	err := restoreRedactedSecrets(current, incoming)
+
+	require.Error(t, err)
+	assert.Empty(t, incoming.Realtime.Weather.Tempest.Token)
 }

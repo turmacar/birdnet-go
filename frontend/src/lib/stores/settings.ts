@@ -468,6 +468,10 @@ export interface TempestSettings {
   // Local UDP address to listen on for Tempest hub broadcasts, e.g. ":50222".
   // Empty defaults to ":50222", WeatherFlow's fixed broadcast port.
   listenAddress: string;
+  /** Optional WeatherFlow cloud credentials used to enrich UDP data with sky conditions. */
+  token: string;
+  stationId: string;
+  endpoint: string;
   extraFields: TempestExtraFields;
 }
 

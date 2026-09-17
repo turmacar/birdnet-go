@@ -163,6 +163,7 @@ func sanitizeConfig(config *conf.Settings) *conf.Settings {
 	sanitized.Realtime.Weather.OpenWeather.APIKey = ""
 	sanitized.Realtime.Weather.Wunderground.APIKey = ""
 	sanitized.Realtime.Weather.PirateWeather.APIKey = ""
+	sanitized.Realtime.Weather.Tempest.Token = ""
 
 	return &sanitized
 }

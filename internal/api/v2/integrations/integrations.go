@@ -633,6 +633,19 @@ func (c *Handler) TestWeatherConnection(ctx echo.Context) error {
 	apicore.RestoreRedactedSecret(current.Realtime.Weather.OpenWeather.APIKey, &request.OpenWeather.APIKey)
 	apicore.RestoreRedactedSecret(current.Realtime.Weather.Wunderground.APIKey, &request.Wunderground.APIKey)
 	apicore.RestoreRedactedSecret(current.Realtime.Weather.PirateWeather.APIKey, &request.PirateWeather.APIKey)
+	if !apicore.RestoreRedactedSecretForEndpoint(
+		current.Realtime.Weather.Tempest.Token,
+		current.Realtime.Weather.Tempest.Endpoint,
+		request.Tempest.Endpoint,
+		&request.Tempest.Token,
+	) {
+		return c.HandleError(ctx, nil, "Re-enter the WeatherFlow token after changing its endpoint", http.StatusBadRequest)
+	}
+	if request.Provider == WeatherProviderTempest {
+		if err := request.Tempest.ValidateTempest(); err != nil {
+			return c.HandleError(ctx, err, "Invalid Tempest configuration", http.StatusBadRequest)
+		}
+	}
 
 	// Validate provider
 	if request.Provider == "" || request.Provider == "none" {
@@ -809,7 +822,15 @@ func (c *Handler) testWeatherAuthentication(ctx context.Context, settings *conf.
 
 	switch provider {
 	case WeatherProviderTempest:
-		return "Authentication not required for Tempest (local broadcast, no credentials)", nil
+		if settings.Realtime.Weather.Tempest.Token == "" {
+			return "Authentication not required for local Tempest data; cloud sky conditions are not configured", nil
+		}
+		client := httpclient.NewGuardedHTTPClient(integrationShortTimeout * time.Second)
+		_, description, _, err := weather.FetchTempestCloudCondition(ctx, client, settings)
+		if err != nil {
+			return "", fmt.Errorf("failed to authenticate with WeatherFlow cloud API: %w", err)
+		}
+		return fmt.Sprintf("Successfully authenticated with WeatherFlow cloud API; current condition: %s", description), nil
 	case WeatherProviderOpenWeather:
 		apiKey := settings.Realtime.Weather.OpenWeather.APIKey
 		endpoint := settings.Realtime.Weather.OpenWeather.Endpoint

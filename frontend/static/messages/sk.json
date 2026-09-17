@@ -3329,6 +3329,35 @@
             "helpText": "V prípade potreby prepíšte predvolený koncový bod API Pirate Weather. Ak zostane prázdny, predvolene sa použije https://api.pirateweather.net/forecast."
           }
         },
+        "tempest": {
+          "listenAddress": {
+            "label": "UDP Listen Address",
+            "helpText": "Local UDP address to listen on for Tempest hub broadcasts. Leave empty to use the default \":50222\" (WeatherFlow's fixed broadcast port)."
+          },
+          "stationId": {
+            "label": "ID stanice WeatherFlow",
+            "helpText": "Voliteľné. Ak chcete získavať údaje o stave oblohy, zadajte číselné ID svojej stanice spolu s osobným prístupovým tokenom."
+          },
+          "token": {
+            "label": "Osobný prístupový token WeatherFlow",
+            "helpText": "Voliteľné. Vytvorte token vo webovej aplikácii Tempest v časti Settings > Data Authorizations. Uchovávajte ho v tajnosti."
+          },
+          "endpoint": {
+            "label": "Koncový bod API WeatherFlow",
+            "helpText": "V prípade potreby prepíšte predvolený cloudový koncový bod WeatherFlow. Pri bežnom používaní ho nemeňte."
+          },
+          "extraFields": {
+            "title": "Doplňujúce údaje stanice",
+            "description": "Vyberte, ktoré merania špecifické pre Tempest sa majú ukladať s každým záznamom o počasí.",
+            "illuminance": "Intenzita osvetlenia",
+            "uvIndex": "UV index",
+            "solarRadiation": "Slnečné žiarenie",
+            "lightningDistance": "Vzdialenosť blesku",
+            "lightningCount": "Počet úderov blesku",
+            "windLull": "Minimálna rýchlosť vetra",
+            "localOnly": "Tieto hodnoty pochádzajú priamo z vášho miestneho centra Tempest a zostávajú v BirdNET-Go. Nikdy sa nenahrávajú do BirdWeather ani do inej meteorologickej služby."
+          }
+        },
         "notes": {
           "none": "Nebudú sa získavať žiadne údaje o počasí.",
           "yrno": {
@@ -3338,8 +3367,9 @@
           "openweather": "Používanie OpenWeather vyžaduje API kľúč, zaregistrujte sa pre bezplatný API kľúč na <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Vyžaduje API kľúč Weather Underground a platné ID stanice PWS. Podrobnosti nájdete na <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a>.",
           "pirateweather": "Používanie Pirate Weather vyžaduje API kľúč, zaregistrujte sa na <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Reads live observations broadcast locally over UDP by a Tempest/WeatherFlow weather station on your network. No API key, account, or internet connection required.",
-          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting."
+          "tempest": "Načítava údaje zo senzorov priamo zo stanice Tempest/WeatherFlow cez miestne UDP. Miestne merania nevyžadujú účet ani internetové pripojenie; voliteľné prihlasovacie údaje do cloudu doplnia stav oblohy.",
+          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting.",
+          "tempestCloud": "Miestny prenos UDP neobsahuje stav oblohy. Ak chcete pri detekciách zobrazovať jasno, oblačno, hmlu a podobné podmienky, nastavte nižšie ID stanice WeatherFlow a osobný prístupový token. Údaje zo senzorov budú naďalej pochádzať z miestnej stanice."
         },
         "apiKey": {
           "label": "API kľúč",
@@ -3368,23 +3398,6 @@
           "options": {
             "celsius": "Stupne Celzia (°C)",
             "fahrenheit": "Stupne Fahrenheita (°F)"
-          }
-        },
-        "tempest": {
-          "listenAddress": {
-            "label": "UDP Listen Address",
-            "helpText": "Local UDP address to listen on for Tempest hub broadcasts. Leave empty to use the default \":50222\" (WeatherFlow's fixed broadcast port)."
-          },
-          "extraFields": {
-            "title": "Doplňujúce údaje stanice",
-            "description": "Vyberte, ktoré merania špecifické pre Tempest sa majú ukladať s každým záznamom o počasí.",
-            "illuminance": "Intenzita osvetlenia",
-            "uvIndex": "UV index",
-            "solarRadiation": "Slnečné žiarenie",
-            "lightningDistance": "Vzdialenosť blesku",
-            "lightningCount": "Počet úderov blesku",
-            "windLull": "Minimálna rýchlosť vetra",
-            "localOnly": "Tieto hodnoty pochádzajú priamo z vášho miestneho centra Tempest a zostávajú v BirdNET-Go. Nikdy sa nenahrávajú do BirdWeather ani do inej meteorologickej služby."
           }
         }
       },

@@ -716,6 +716,30 @@ func TestRestoreRedactedSecret(t *testing.T) {
 	}
 }
 
+func TestRestoreRedactedSecretForEndpoint(t *testing.T) {
+	t.Parallel()
+
+	t.Run("restores when endpoint is unchanged", func(t *testing.T) {
+		t.Parallel()
+		incoming := redactedSecretPlaceholder
+		restored := apicore.RestoreRedactedSecretForEndpoint(
+			"saved-token", "https://api.example.com", "https://api.example.com", &incoming,
+		)
+		assert.True(t, restored)
+		assert.Equal(t, "saved-token", incoming)
+	})
+
+	t.Run("requires re-entry when endpoint changes", func(t *testing.T) {
+		t.Parallel()
+		incoming := redactedSecretPlaceholder
+		restored := apicore.RestoreRedactedSecretForEndpoint(
+			"saved-token", "https://api.example.com", "https://other.example.com", &incoming,
+		)
+		assert.False(t, restored)
+		assert.Equal(t, redactedSecretPlaceholder, incoming)
+	})
+}
+
 // publishWeatherTestSettings sets the saved weather provider config the handler
 // reads via CurrentSettings() and returns the handler. It re-publishes the
 // settings so CurrentSettings() (which reads the global snapshot first) observes

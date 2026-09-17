@@ -3329,6 +3329,35 @@
             "helpText": "Sobrescribe el endpoint de API de Pirate Weather si es necesario. Por defecto usa https://api.pirateweather.net/forecast si se deja vacío."
           }
         },
+        "tempest": {
+          "listenAddress": {
+            "label": "UDP Listen Address",
+            "helpText": "Local UDP address to listen on for Tempest hub broadcasts. Leave empty to use the default \":50222\" (WeatherFlow's fixed broadcast port)."
+          },
+          "stationId": {
+            "label": "ID de estación de WeatherFlow",
+            "helpText": "Opcional. Introduce el ID numérico de tu estación junto con un token de acceso personal para obtener las condiciones del cielo."
+          },
+          "token": {
+            "label": "Token de acceso personal de WeatherFlow",
+            "helpText": "Opcional. Crea un token en la aplicación web de Tempest, en Settings > Data Authorizations. Mantenlo en secreto."
+          },
+          "endpoint": {
+            "label": "Endpoint de API de WeatherFlow",
+            "helpText": "Sobrescribe el endpoint predeterminado de la nube de WeatherFlow si es necesario. Déjalo sin cambios para el uso normal."
+          },
+          "extraFields": {
+            "title": "Datos adicionales de la estación",
+            "description": "Selecciona qué mediciones específicas de Tempest se guardarán con cada registro meteorológico.",
+            "illuminance": "Iluminancia",
+            "uvIndex": "Índice UV",
+            "solarRadiation": "Radiación solar",
+            "lightningDistance": "Distancia de los rayos",
+            "lightningCount": "Número de rayos",
+            "windLull": "Velocidad mínima del viento",
+            "localOnly": "Estas mediciones proceden directamente de tu concentrador Tempest local y permanecen en BirdNET-Go. Nunca se suben a BirdWeather ni a ningún otro servicio meteorológico."
+          }
+        },
         "notes": {
           "none": "No se recuperarán datos meteorológicos.",
           "yrno": {
@@ -3338,8 +3367,9 @@
           "openweather": "El uso de OpenWeather requiere una clave API, regístrese para obtener una clave API gratuita en <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Requiere una clave API de Weather Underground y un ID de estación PWS válido. Los datos meteorológicos de Weather Underground solo están disponibles en inglés. Consulte <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> para más detalles.",
           "pirateweather": "El uso de Pirate Weather requiere una clave API, regístrese en <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Reads live observations broadcast locally over UDP by a Tempest/WeatherFlow weather station on your network. No API key, account, or internet connection required.",
-          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting."
+          "tempest": "Lee observaciones de los sensores directamente desde una estación Tempest/WeatherFlow mediante UDP local. Las lecturas locales no requieren cuenta ni conexión a Internet; las credenciales opcionales de la nube añaden las condiciones del cielo.",
+          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting.",
+          "tempestCloud": "La transmisión UDP local no incluye las condiciones del cielo. Para mostrar Despejado, Nublado, Niebla y condiciones similares en las detecciones, configura abajo un ID de estación de WeatherFlow y un token de acceso personal. Las lecturas de los sensores seguirán procediendo de la estación local."
         },
         "apiKey": {
           "label": "Clave API",
@@ -3368,23 +3398,6 @@
           "options": {
             "celsius": "Celsius (°C)",
             "fahrenheit": "Fahrenheit (°F)"
-          }
-        },
-        "tempest": {
-          "listenAddress": {
-            "label": "UDP Listen Address",
-            "helpText": "Local UDP address to listen on for Tempest hub broadcasts. Leave empty to use the default \":50222\" (WeatherFlow's fixed broadcast port)."
-          },
-          "extraFields": {
-            "title": "Datos adicionales de la estación",
-            "description": "Selecciona qué mediciones específicas de Tempest se guardarán con cada registro meteorológico.",
-            "illuminance": "Iluminancia",
-            "uvIndex": "Índice UV",
-            "solarRadiation": "Radiación solar",
-            "lightningDistance": "Distancia de los rayos",
-            "lightningCount": "Número de rayos",
-            "windLull": "Velocidad mínima del viento",
-            "localOnly": "Estas mediciones proceden directamente de tu concentrador Tempest local y permanecen en BirdNET-Go. Nunca se suben a BirdWeather ni a ningún otro servicio meteorológico."
           }
         }
       },

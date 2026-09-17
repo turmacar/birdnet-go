@@ -273,6 +273,12 @@ func setDefaultConfig() {
 	viper.SetDefault("realtime.weather.pirateweather.apikey", "")
 	viper.SetDefault("realtime.weather.pirateweather.endpoint", "https://api.pirateweather.net/forecast")
 
+	// Tempest local UDP and optional WeatherFlow cloud enrichment.
+	viper.SetDefault("realtime.weather.tempest.listenaddress", "")
+	viper.SetDefault("realtime.weather.tempest.token", "")
+	viper.SetDefault("realtime.weather.tempest.stationid", "")
+	viper.SetDefault("realtime.weather.tempest.endpoint", "https://swd.weatherflow.com/swd/rest/better_forecast")
+
 	// RTSP configuration
 	viper.SetDefault("realtime.rtsp.urls", []string{})
 	viper.SetDefault("realtime.rtsp.transport", DefaultTransport)

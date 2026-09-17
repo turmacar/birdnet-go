@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/http"
+	"net/url"
 	"syscall"
 	"time"
 
 	"github.com/tphakala/birdnet-go/internal/conf"
 	weathererrors "github.com/tphakala/birdnet-go/internal/errors"
 	"github.com/tphakala/birdnet-go/internal/logger"
+	"github.com/tphakala/birdnet-go/internal/privacy"
 )
 
 const (
@@ -22,6 +25,7 @@ const (
 	// local UDP broadcast port. Binding to an empty host means "all
 	// interfaces", which is what's needed to receive a broadcast packet.
 	tempestDefaultListenAddress = ":50222"
+	tempestCloudEndpoint        = "https://swd.weatherflow.com/swd/rest/better_forecast"
 
 	// tempestObsMessageType is the only UDP broadcast message type mapped to
 	// WeatherData; rapid_wind, hub_status, device_status, and others are
@@ -68,6 +72,34 @@ const (
 type tempestObsSTMessage struct {
 	Type string      `json:"type"`
 	Obs  [][]float64 `json:"obs"`
+}
+
+type tempestCloudResponse struct {
+	CurrentConditions struct {
+		Conditions string `json:"conditions"`
+		Icon       string `json:"icon"`
+	} `json:"current_conditions"`
+}
+
+var tempestCloudIcons = map[string]IconCode{
+	"clear-day":                   IconClearSky,
+	"clear-night":                 IconClearSky,
+	"cloudy":                      IconCloudy,
+	"foggy":                       IconFog,
+	"partly-cloudy-day":           IconPartlyCloudy,
+	"partly-cloudy-night":         IconPartlyCloudy,
+	"possibly-rainy-day":          IconRainShowers,
+	"possibly-rainy-night":        IconRainShowers,
+	"possibly-sleet-day":          IconSleet,
+	"possibly-sleet-night":        IconSleet,
+	"possibly-snow-day":           IconSnow,
+	"possibly-snow-night":         IconSnow,
+	"possibly-thunderstorm-day":   IconThunderstorm,
+	"possibly-thunderstorm-night": IconThunderstorm,
+	"rainy":                       IconRain,
+	"sleet":                       IconSleet,
+	"snow":                        IconSnow,
+	"thunderstorm":                IconThunderstorm,
 }
 
 // TempestExtras holds Tempest sensor readings with no WeatherData equivalent.
@@ -304,12 +336,9 @@ func (p *TempestProvider) LatestTempestExtras() (*TempestExtras, bool) {
 	return &extras, true
 }
 
-// FetchWeather implements the Provider interface for TempestProvider. Unlike
-// the HTTP-based providers, this never makes a network call: it returns
-// whatever the background UDP listener (see Start/readLoop) has most
-// recently cached, or an error if nothing has been received yet or the
-// cached observation is too old to trust.
-func (p *TempestProvider) FetchWeather(_ context.Context, settings *conf.Settings) (*WeatherData, error) {
+// FetchWeather returns the latest local UDP observation, optionally enriched
+// with a sky condition from WeatherFlow's cloud API.
+func (p *TempestProvider) FetchWeather(ctx context.Context, settings *conf.Settings) (*WeatherData, error) {
 	p.mu.RLock()
 	latest := p.latest
 	receivedAt := p.receivedAt
@@ -335,7 +364,91 @@ func (p *TempestProvider) FetchWeather(_ context.Context, settings *conf.Setting
 		Latitude:  settings.BirdNET.Latitude,
 		Longitude: settings.BirdNET.Longitude,
 	}
+	if err := p.enrichSkyCondition(ctx, settings, &data); err != nil {
+		getLogger().WithContext(ctx).Warn("Could not enrich Tempest sky condition from WeatherFlow cloud",
+			logger.Error(err))
+	}
 	return &data, nil
+}
+
+func (p *TempestProvider) enrichSkyCondition(ctx context.Context, settings *conf.Settings, data *WeatherData) error {
+	weatherMain, description, icon, err := FetchTempestCloudCondition(ctx, p.httpClient, settings)
+	if err != nil {
+		return err
+	}
+	if description == "" {
+		return nil
+	}
+	data.WeatherMain = weatherMain
+	data.Description = description
+	data.Icon = icon
+	return nil
+}
+
+// FetchTempestCloudCondition retrieves the current sky condition from
+// WeatherFlow's cloud API. Empty values with no error mean cloud enrichment is
+// not configured; callers can continue using the local UDP observation.
+func FetchTempestCloudCondition(ctx context.Context, client *http.Client, settings *conf.Settings) (weatherMain, description, icon string, err error) {
+	cloud := settings.Realtime.Weather.Tempest
+	if cloud.Token == "" || cloud.StationID == "" {
+		return "", "", "", nil
+	}
+	if client == nil {
+		client = newUnguardedTestClient()
+	}
+	endpoint := cloud.Endpoint
+	if endpoint == "" {
+		endpoint = tempestCloudEndpoint
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", "", "", newWeatherError(privacy.WrapError(err), weathererrors.CategoryConfiguration, "parse_cloud_endpoint", tempestProviderName)
+	}
+	if err := validateEndpointScheme(u, tempestProviderName); err != nil {
+		return "", "", "", err
+	}
+	query := u.Query()
+	query.Set("station_id", cloud.StationID)
+	query.Set("token", cloud.Token)
+	query.Set("units_temp", "c")
+	query.Set("units_wind", "mps")
+	query.Set("units_pressure", "hpa")
+	query.Set("units_precip", "mm")
+	query.Set("units_distance", "km")
+	u.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), http.NoBody)
+	if err != nil {
+		return "", "", "", newWeatherError(privacy.WrapError(err), weathererrors.CategoryNetwork, "create_cloud_request", tempestProviderName)
+	}
+	req.Header.Set("User-Agent", UserAgent())
+	providerLogger := getLogger().WithContext(ctx).With(logger.String("provider", tempestProviderName))
+	requestClient := *client
+	requestClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	resp, err := requestClient.Do(req) //nolint:bodyclose // standardHandleResponse closes the body on every path.
+	if err != nil {
+		return "", "", "", newWeatherError(privacy.WrapError(err), weathererrors.CategoryNetwork, "cloud_api_request", tempestProviderName)
+	}
+	body, _, err := standardHandleResponse(tempestProviderName)(resp, providerLogger, true)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	var response tempestCloudResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return "", "", "", newWeatherError(err, weathererrors.CategoryValidation, "unmarshal_cloud_response", tempestProviderName)
+	}
+	if response.CurrentConditions.Conditions == "" {
+		return "", "", "", newWeatherError(fmt.Errorf("cloud response has no current conditions"), weathererrors.CategoryValidation, "validate_cloud_response", tempestProviderName)
+	}
+
+	standardIcon, ok := tempestCloudIcons[response.CurrentConditions.Icon]
+	if !ok {
+		standardIcon = IconUnknown
+	}
+	return weatherMainFromIconCode(standardIcon), response.CurrentConditions.Conditions, string(standardIcon), nil
 }
 
 // CheckTempestListenAddress reports whether listenAddress can be bound,

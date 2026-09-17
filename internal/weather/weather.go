@@ -368,7 +368,7 @@ func resolveWeatherProvider(settings *conf.Settings, weatherClient *http.Client)
 	case conf.WeatherPirateWeather:
 		return NewPirateWeatherProvider(weatherClient), pirateWeatherProviderName, false
 	case conf.WeatherTempest:
-		return NewTempestProvider(settings.Realtime.Weather.Tempest.ListenAddress), tempestProviderName, false
+		return NewTempestProvider(settings.Realtime.Weather.Tempest.ListenAddress, weatherClient), tempestProviderName, false
 	default:
 		return nil, "", true
 	}

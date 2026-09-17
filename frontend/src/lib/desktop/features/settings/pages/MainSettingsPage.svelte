@@ -926,6 +926,9 @@
         },
         tempest: {
           listenAddress: currentWeather.tempest?.listenAddress ?? '',
+          token: currentWeather.tempest?.token ?? '',
+          stationId: currentWeather.tempest?.stationId ?? '',
+          endpoint: currentWeather.tempest?.endpoint ?? tempestDefaults.endpoint,
           extraFields: currentWeather.tempest?.extraFields ?? tempestDefaults.extraFields,
         },
       };
@@ -1415,6 +1418,9 @@
           <SettingsNote className="border border-[var(--color-warning)]">
             <span>{@html t('settings.integration.weather.notes.tempestNetworking')}</span>
           </SettingsNote>
+          <SettingsNote>
+            <span>{@html t('settings.integration.weather.notes.tempestCloud')}</span>
+          </SettingsNote>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
             <TextInput
@@ -1423,6 +1429,31 @@
               onchange={listenAddress => updateTempestSetting('listenAddress', listenAddress)}
               placeholder=":50222"
               helpText={t('settings.integration.weather.tempest.listenAddress.helpText')}
+              disabled={store.isLoading || store.isSaving}
+            />
+            <TextInput
+              label={t('settings.integration.weather.tempest.stationId.label')}
+              value={settings.weather.tempest?.stationId ?? ''}
+              onchange={stationId => updateTempestSetting('stationId', stationId)}
+              placeholder=""
+              helpText={t('settings.integration.weather.tempest.stationId.helpText')}
+              disabled={store.isLoading || store.isSaving}
+            />
+            <PasswordField
+              label={t('settings.integration.weather.tempest.token.label')}
+              value={settings.weather.tempest?.token ?? ''}
+              onUpdate={token => updateTempestSetting('token', token)}
+              placeholder=""
+              helpText={t('settings.integration.weather.tempest.token.helpText')}
+              disabled={store.isLoading || store.isSaving}
+              allowReveal={true}
+            />
+            <TextInput
+              label={t('settings.integration.weather.tempest.endpoint.label')}
+              value={settings.weather.tempest?.endpoint ?? ''}
+              onchange={endpoint => updateTempestSetting('endpoint', endpoint)}
+              placeholder={tempestDefaults.endpoint}
+              helpText={t('settings.integration.weather.tempest.endpoint.helpText')}
               disabled={store.isLoading || store.isSaving}
             />
           </div>

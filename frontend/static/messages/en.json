@@ -3334,6 +3334,18 @@
             "label": "UDP Listen Address",
             "helpText": "Local UDP address to listen on for Tempest hub broadcasts. Leave empty to use the default \":50222\" (WeatherFlow's fixed broadcast port)."
           },
+          "stationId": {
+            "label": "WeatherFlow Station ID",
+            "helpText": "Optional. Enter your numeric station ID together with a personal access token to retrieve sky conditions."
+          },
+          "token": {
+            "label": "WeatherFlow Personal Access Token",
+            "helpText": "Optional. Create a token in the Tempest Web App under Settings > Data Authorizations. Keep this secret."
+          },
+          "endpoint": {
+            "label": "WeatherFlow API Endpoint",
+            "helpText": "Override the default WeatherFlow cloud endpoint if needed. Leave unchanged for normal use."
+          },
           "extraFields": {
             "title": "Additional station data",
             "description": "Choose which Tempest-specific readings to store with each weather record.",
@@ -3355,8 +3367,9 @@
           "openweather": "Use of OpenWeather requires an API key, sign up for a free API key at <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Requires a Weather Underground API key and a valid PWS station ID. See <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> for details.",
           "pirateweather": "Use of Pirate Weather requires an API key, sign up at <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
-          "tempest": "Reads live observations broadcast locally over UDP by a Tempest/WeatherFlow weather station on your network. No API key, account, or internet connection required.",
-          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting."
+          "tempest": "Reads sensor observations directly from a Tempest/WeatherFlow station over local UDP. Local readings require no account or internet connection; optional cloud credentials add sky conditions.",
+          "tempestNetworking": "Requires the birdnet-go container to share your LAN's broadcast domain (e.g. Docker <code>host</code> networking or an ipvlan/macvlan network such as Unraid's <code>br0</code>). A standard Docker bridge network will never receive these broadcasts, regardless of this setting.",
+          "tempestCloud": "The local UDP feed does not include sky condition. To show Clear, Cloudy, Fog, and similar conditions on detections, configure a WeatherFlow station ID and personal access token below. Sensor readings continue to come from the local station."
         },
         "apiKey": {
           "label": "API Key",

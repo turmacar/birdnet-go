@@ -316,6 +316,9 @@ RealtimeSettings contains all settings related to realtime processing.
 | `realtime.weather.pirateweather.apikey` | string | Pirate Weather API key |
 | `realtime.weather.pirateweather.endpoint` | string | Pirate Weather API endpoint |
 | `realtime.weather.tempest.listenaddress` | string | ListenAddress is the local UDP address to listen on for Tempest hub broadcasts, e.g. ":50222" (all interfaces) or "192.168.1.50:50222" (a specific interface). Empty defaults to ":50222" - WeatherFlow's fixed, non-configurable broadcast port. Receiving these broadcasts requires the birdnet-go container/host to share the LAN's broadcast domain (e.g. Docker host networking or an ipvlan/macvlan network); a standard Docker bridge network will never receive them regardless of this setting. |
+| `realtime.weather.tempest.token` | string |  |
+| `realtime.weather.tempest.stationid` | string |  |
+| `realtime.weather.tempest.endpoint` | string |  |
 | `realtime.weather.tempest.extrafields.illuminance` | boolean |  |
 | `realtime.weather.tempest.extrafields.uvindex` | boolean |  |
 | `realtime.weather.tempest.extrafields.solarradiation` | boolean |  |

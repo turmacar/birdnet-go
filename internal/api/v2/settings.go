@@ -1810,6 +1810,7 @@ func sanitizeSettingsForAPI(s *conf.Settings) *conf.Settings {
 	sanitized.Realtime.Weather.OpenWeather.APIKey = redact(s.Realtime.Weather.OpenWeather.APIKey)
 	sanitized.Realtime.Weather.Wunderground.APIKey = redact(s.Realtime.Weather.Wunderground.APIKey)
 	sanitized.Realtime.Weather.PirateWeather.APIKey = redact(s.Realtime.Weather.PirateWeather.APIKey)
+	sanitized.Realtime.Weather.Tempest.Token = redact(s.Realtime.Weather.Tempest.Token)
 
 	// --- eBird API key ---
 	sanitized.Realtime.EBird.APIKey = redact(s.Realtime.EBird.APIKey)
@@ -1922,6 +1923,12 @@ func restoreRedactedSecrets(current, incoming *conf.Settings) error {
 	restore(&current.Realtime.Weather.OpenWeather.APIKey, &incoming.Realtime.Weather.OpenWeather.APIKey)
 	restore(&current.Realtime.Weather.Wunderground.APIKey, &incoming.Realtime.Weather.Wunderground.APIKey)
 	restore(&current.Realtime.Weather.PirateWeather.APIKey, &incoming.Realtime.Weather.PirateWeather.APIKey)
+	apicore.RestoreRedactedSecretForEndpoint(
+		current.Realtime.Weather.Tempest.Token,
+		current.Realtime.Weather.Tempest.Endpoint,
+		incoming.Realtime.Weather.Tempest.Endpoint,
+		&incoming.Realtime.Weather.Tempest.Token,
+	)
 
 	// eBird
 	restore(&current.Realtime.EBird.APIKey, &incoming.Realtime.EBird.APIKey)
@@ -2014,6 +2021,7 @@ func validateNoRedactedSentinels(s *conf.Settings) error {
 	check(s.Realtime.Weather.OpenWeather.APIKey, "realtime.weather.openWeather.apiKey")
 	check(s.Realtime.Weather.Wunderground.APIKey, "realtime.weather.wunderground.apiKey")
 	check(s.Realtime.Weather.PirateWeather.APIKey, "realtime.weather.pirateWeather.apiKey")
+	check(s.Realtime.Weather.Tempest.Token, "realtime.weather.tempest.token")
 	check(s.Realtime.EBird.APIKey, "realtime.ebird.apiKey")
 
 	// Array-based OAuth providers
@@ -2082,6 +2090,7 @@ func clearRedactedSentinels(s *conf.Settings) {
 	clearField(&s.Realtime.Weather.OpenWeather.APIKey)
 	clearField(&s.Realtime.Weather.Wunderground.APIKey)
 	clearField(&s.Realtime.Weather.PirateWeather.APIKey)
+	clearField(&s.Realtime.Weather.Tempest.Token)
 	clearField(&s.Realtime.EBird.APIKey)
 
 	for i := range s.Security.OAuthProviders {

@@ -2653,6 +2653,15 @@
           "type": "string",
           "description": "ListenAddress is the local UDP address to listen on for Tempest hub\nbroadcasts, e.g. \":50222\" (all interfaces) or \"192.168.1.50:50222\" (a\nspecific interface). Empty defaults to \":50222\" - WeatherFlow's fixed,\nnon-configurable broadcast port. Receiving these broadcasts requires the\nbirdnet-go container/host to share the LAN's broadcast domain (e.g.\nDocker host networking or an ipvlan/macvlan network); a standard Docker\nbridge network will never receive them regardless of this setting."
         },
+        "token": {
+          "type": "string"
+        },
+        "stationid": {
+          "type": "string"
+        },
+        "endpoint": {
+          "type": "string"
+        },
         "extrafields": {
           "$ref": "#/$defs/TempestExtraFields",
           "description": "ExtraFields selects which Tempest sensor readings beyond the shared\nWeatherData fields get persisted alongside each hourly weather record\n(see HourlyWeather.TempestExtrasJSON). All false by default: this data\nis Tempest-specific and has no equivalent in the other providers, so it\nis opt-in per field rather than always stored."
@@ -2660,7 +2669,7 @@
       },
       "additionalProperties": false,
       "type": "object",
-      "description": "TempestSettings contains settings for a local Tempest/WeatherFlow weather station integration."
+      "description": "TempestSettings contains settings for a Tempest/WeatherFlow station."
     },
     "Thumbnails": {
       "properties": {

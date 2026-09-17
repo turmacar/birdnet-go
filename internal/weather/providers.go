@@ -61,8 +61,11 @@ func NewPirateWeatherProvider(client *http.Client) Provider {
 // an outbound HTTP request (see provider_tempest.go). listenAddress is the
 // local UDP address to listen on; an empty string defaults to ":50222",
 // WeatherFlow's fixed, non-configurable broadcast port.
-func NewTempestProvider(listenAddress string) Provider {
-	return &TempestProvider{listenAddress: listenAddress}
+func NewTempestProvider(listenAddress string, client *http.Client) Provider {
+	if client == nil {
+		client = newUnguardedTestClient()
+	}
+	return &TempestProvider{listenAddress: listenAddress, httpClient: client}
 }
 
 // Provider implementations
@@ -92,6 +95,7 @@ type PirateWeatherProvider struct {
 // UDP listener, packet parsing, and FetchWeather implementation.
 type TempestProvider struct {
 	listenAddress string
+	httpClient    *http.Client
 
 	startOnce sync.Once
 

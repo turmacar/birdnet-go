@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"iter"
 	"net"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 const (
 	NorthernHemisphereThreshold = 10.0
 	SouthernHemisphereThreshold = -10.0
+	httpsScheme                 = "https"
 )
 
 //go:embed config.yaml
@@ -513,11 +516,9 @@ type PirateWeatherSettings struct {
 	Endpoint string `yaml:"endpoint" json:"endpoint"` // Pirate Weather API endpoint
 }
 
-// TempestSettings contains settings for a local Tempest/WeatherFlow weather
-// station integration. Unlike the other providers, Tempest requires no API
-// key or account: observations arrive via an unauthenticated local UDP
-// broadcast (see internal/weather/provider_tempest.go), so the only
-// configurable field is which local address to listen on.
+// TempestSettings contains settings for a Tempest/WeatherFlow station.
+// Sensor observations arrive over local UDP; optional WeatherFlow cloud
+// credentials enrich them with sky conditions unavailable in that protocol.
 type TempestSettings struct {
 	// ListenAddress is the local UDP address to listen on for Tempest hub
 	// broadcasts, e.g. ":50222" (all interfaces) or "192.168.1.50:50222" (a
@@ -527,6 +528,9 @@ type TempestSettings struct {
 	// Docker host networking or an ipvlan/macvlan network); a standard Docker
 	// bridge network will never receive them regardless of this setting.
 	ListenAddress string `yaml:"listenaddress" json:"listenAddress"`
+	Token         string `yaml:"token" json:"token"`
+	StationID     string `yaml:"stationid" json:"stationId"`
+	Endpoint      string `yaml:"endpoint" json:"endpoint"`
 
 	// ExtraFields selects which Tempest sensor readings beyond the shared
 	// WeatherData fields get persisted alongside each hourly weather record
@@ -2123,16 +2127,27 @@ func (p *PirateWeatherSettings) ValidatePirateWeather() error {
 	return nil
 }
 
-// ValidateTempest validates Tempest settings when the provider is "tempest".
-// Tempest requires no credentials (see TempestSettings), so this only checks
-// that a non-empty ListenAddress is a well-formed host:port pair; an empty
-// value is valid and defaults to ":50222" at the provider layer.
+// ValidateTempest validates local UDP and optional cloud-enrichment settings.
 func (t *TempestSettings) ValidateTempest() error {
-	if t.ListenAddress == "" {
-		return nil
+	if t.ListenAddress != "" {
+		if _, _, err := net.SplitHostPort(t.ListenAddress); err != nil {
+			return fmt.Errorf("tempest.listenAddress must be a valid host:port, got %q: %w", t.ListenAddress, err)
+		}
 	}
-	if _, _, err := net.SplitHostPort(t.ListenAddress); err != nil {
-		return fmt.Errorf("tempest.listenAddress must be a valid host:port, got %q: %w", t.ListenAddress, err)
+	if (t.Token == "") != (t.StationID == "") {
+		return fmt.Errorf("tempest.token and tempest.stationId must both be configured to enable cloud sky conditions")
+	}
+	if t.StationID != "" {
+		stationID, err := strconv.ParseInt(t.StationID, 10, 64)
+		if err != nil || stationID <= 0 {
+			return fmt.Errorf("tempest.stationId must be a positive integer")
+		}
+	}
+	if t.Endpoint != "" {
+		endpoint, err := url.Parse(t.Endpoint)
+		if err != nil || (endpoint.Scheme != StreamTypeHTTP && endpoint.Scheme != httpsScheme) || endpoint.Host == "" {
+			return fmt.Errorf("tempest.endpoint must be an absolute http(s) URL")
+		}
 	}
 	return nil
 }

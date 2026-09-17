@@ -459,6 +459,38 @@ func TestValidateWeatherSettings_InvalidProvider(t *testing.T) {
 	}
 }
 
+func TestTempestSettingsValidate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		settings TempestSettings
+		wantErr  bool
+	}{
+		{name: "local only"},
+		{name: "valid cloud", settings: TempestSettings{Token: "token", StationID: "12345", Endpoint: "https://swd.weatherflow.com/swd/rest/better_forecast"}},
+		{name: "token without station", settings: TempestSettings{Token: "token"}, wantErr: true},
+		{name: "station without token", settings: TempestSettings{StationID: "12345"}, wantErr: true},
+		{name: "non-numeric station", settings: TempestSettings{Token: "token", StationID: "station"}, wantErr: true},
+		{name: "zero station", settings: TempestSettings{Token: "token", StationID: "0"}, wantErr: true},
+		{name: "relative endpoint", settings: TempestSettings{Endpoint: "swd.weatherflow.com"}, wantErr: true},
+		{name: "unsupported endpoint scheme", settings: TempestSettings{Endpoint: "ftp://swd.weatherflow.com"}, wantErr: true},
+		{name: "valid listen address", settings: TempestSettings{ListenAddress: ":50222"}},
+		{name: "invalid listen address", settings: TempestSettings{ListenAddress: "50222"}, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.settings.ValidateTempest()
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
 // -----------------------------------------------------------------------
 // Issue #504: Retention maxAge/minClips
 // -----------------------------------------------------------------------
