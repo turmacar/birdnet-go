@@ -303,6 +303,15 @@ realtime:
     pirateweather:
       apikey: ""        # Pirate Weather API key
       endpoint: "https://api.pirateweather.net/forecast" # Pirate Weather API endpoint
+    tempest:
+      listenaddress: "" # local UDP listen address, empty for :50222 (WeatherFlow broadcast port)
+      extrafields:      # extra Tempest readings to store with hourly weather
+        illuminance: false
+        uvindex: false
+        solarradiation: false
+        lightningdistance: false
+        lightningcount: false
+        windlull: false
 
   mqtt:
     enabled: false        # true to enable MQTT

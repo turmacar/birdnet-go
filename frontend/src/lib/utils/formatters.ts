@@ -392,6 +392,56 @@ export function getWindSpeedUnit(unit: TemperatureUnit): string {
 }
 
 /**
+ * Distance conversion constant: 1 km = 0.621371 miles
+ */
+const KM_TO_MILES = 0.621371;
+
+/**
+ * Convert a distance from kilometers to the specified unit system.
+ *
+ * @param kilometers - Distance in km
+ * @param unit - Target unit system: 'metric'/'standard' (km), 'imperial' (miles)
+ * @returns Distance converted to the target unit
+ */
+export function convertDistance(kilometers: number, unit: TemperatureUnit): number {
+  switch (unit) {
+    case 'imperial':
+      return kilometers * KM_TO_MILES;
+    case 'metric':
+    case 'standard':
+      return kilometers;
+    default: {
+      // Exhaustive check - ensures all TemperatureUnit cases are handled
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _exhaustiveCheck: never = unit;
+      return kilometers;
+    }
+  }
+}
+
+/**
+ * Get the distance unit label for display.
+ *
+ * @param unit - Unit system: 'metric', 'imperial', or 'standard'
+ * @returns Unit label (km or mi)
+ */
+export function getDistanceUnit(unit: TemperatureUnit): string {
+  switch (unit) {
+    case 'imperial':
+      return 'mi';
+    case 'metric':
+    case 'standard':
+      return 'km';
+    default: {
+      // Exhaustive check - ensures all TemperatureUnit cases are handled
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const _exhaustiveCheck: never = unit;
+      return 'km';
+    }
+  }
+}
+
+/**
  * Format wind speed for display with conversion and unit label.
  * All wind speeds are stored internally in m/s and converted for display.
  *

@@ -274,6 +274,16 @@ func setDefaultConfig() {
 	viper.SetDefault("realtime.weather.pirateweather.apikey", "")
 	viper.SetDefault("realtime.weather.pirateweather.endpoint", "https://api.pirateweather.net/forecast")
 
+	// Tempest (local UDP) specific configuration; an empty listen address means
+	// WeatherFlow's fixed broadcast port.
+	viper.SetDefault("realtime.weather.tempest.listenaddress", "")
+	viper.SetDefault("realtime.weather.tempest.extrafields.illuminance", false)
+	viper.SetDefault("realtime.weather.tempest.extrafields.uvindex", false)
+	viper.SetDefault("realtime.weather.tempest.extrafields.solarradiation", false)
+	viper.SetDefault("realtime.weather.tempest.extrafields.lightningdistance", false)
+	viper.SetDefault("realtime.weather.tempest.extrafields.lightningcount", false)
+	viper.SetDefault("realtime.weather.tempest.extrafields.windlull", false)
+
 	// RTSP configuration
 	viper.SetDefault("realtime.rtsp.urls", []string{})
 	viper.SetDefault("realtime.rtsp.transport", DefaultTransport)

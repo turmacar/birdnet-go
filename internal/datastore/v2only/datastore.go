@@ -2225,6 +2225,7 @@ func (ds *Datastore) SaveHourlyWeather(hourlyWeather *datastore.HourlyWeather) e
 		WeatherMain:       hourlyWeather.WeatherMain,
 		WeatherDesc:       hourlyWeather.WeatherDesc,
 		WeatherIcon:       hourlyWeather.WeatherIcon,
+		WeatherExtrasJSON: hourlyWeather.WeatherExtrasJSON,
 	}
 	return ds.weather.SaveHourlyWeather(ctx, v2Weather)
 }
@@ -2262,6 +2263,7 @@ func (ds *Datastore) GetHourlyWeather(date string) ([]datastore.HourlyWeather, e
 			WeatherMain:       w.WeatherMain,
 			WeatherDesc:       w.WeatherDesc,
 			WeatherIcon:       w.WeatherIcon,
+			WeatherExtrasJSON: w.WeatherExtrasJSON,
 		})
 	}
 	return result, nil
@@ -2297,6 +2299,7 @@ func (ds *Datastore) LatestHourlyWeather() (*datastore.HourlyWeather, error) {
 		WeatherMain:       w.WeatherMain,
 		WeatherDesc:       w.WeatherDesc,
 		WeatherIcon:       w.WeatherIcon,
+		WeatherExtrasJSON: w.WeatherExtrasJSON,
 	}, nil
 }
 

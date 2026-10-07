@@ -18,6 +18,8 @@ import {
   formatCurrency,
   truncateText,
   parseISODate,
+  convertDistance,
+  getDistanceUnit,
 } from './formatters';
 import { getLocalDateString } from './date';
 
@@ -370,6 +372,20 @@ describe('formatters', () => {
 
     it('returns empty string for invalid date string', () => {
       expect(formatTimeOfDay('not-a-date')).toBe('');
+    });
+  });
+
+  describe('distance units', () => {
+    it('keeps kilometers for metric and standard', () => {
+      expect(convertDistance(10, 'metric')).toBe(10);
+      expect(convertDistance(10, 'standard')).toBe(10);
+      expect(getDistanceUnit('metric')).toBe('km');
+      expect(getDistanceUnit('standard')).toBe('km');
+    });
+
+    it('converts kilometers to miles for imperial', () => {
+      expect(convertDistance(10, 'imperial')).toBeCloseTo(6.21371, 5);
+      expect(getDistanceUnit('imperial')).toBe('mi');
     });
   });
 });
