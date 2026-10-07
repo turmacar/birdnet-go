@@ -947,7 +947,10 @@
         "wind": "Vind",
         "humidity": "Luftfuktighet",
         "pressure": "Lufttryck",
-        "cloudCover": "Molntäcke"
+        "cloudCover": "Molntäcke",
+        "uvIndex": "UV-index",
+        "lightningDistance": "Genomsnittligt avstånd för blixtnedslag",
+        "lightningCount": "{count} blixtnedslag"
       },
       "units": {
         "temperature": "°C",
@@ -3337,7 +3340,8 @@
             "yrno": "Yr.no",
             "openweather": "OpenWeather",
             "wunderground": "Weather Underground",
-            "pirateweather": "Pirate Weather"
+            "pirateweather": "Pirate Weather",
+            "tempest": "Tempest (local)"
           }
         },
         "wunderground": {
@@ -3376,7 +3380,9 @@
           },
           "openweather": "Användning av OpenWeather kräver en API-nyckel, registrera dig för en gratis API-nyckel på <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Kräver en Weather Underground API-nyckel och ett giltigt PWS-stations-ID. Se <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> för detaljer.",
-          "pirateweather": "Användning av Pirate Weather kräver en API-nyckel, registrera dig på <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>."
+          "pirateweather": "Användning av Pirate Weather kräver en API-nyckel, registrera dig på <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
+          "tempest": "Läser realtidsobservationer som sänds lokalt via UDP av en Tempest/WeatherFlow-väderstation på ditt nätverk. Ingen API-nyckel, inget konto eller internetanslutning krävs.",
+          "tempestNetworking": "Kräver att birdnet-go-containern delar ditt LAN:s broadcast-domän (t.ex. Dockers <code>host</code>-nätverk eller ett ipvlan/macvlan-nätverk som Unraids <code>br0</code>). Ett vanligt Docker-bridge-nätverk kommer aldrig att ta emot dessa broadcaster, oavsett denna inställning."
         },
         "apiKey": {
           "label": "API-nyckel",
@@ -3405,6 +3411,23 @@
           "options": {
             "celsius": "Celsius (°C)",
             "fahrenheit": "Fahrenheit (°F)"
+          }
+        },
+        "tempest": {
+          "listenAddress": {
+            "label": "UDP-lyssningsadress",
+            "helpText": "Lokal UDP-adress att lyssna på för Tempest hub-sändningar. Lämna tomt för att använda standardvärdet \":50222\" (WeatherFlows fasta broadcast-port)."
+          },
+          "extraFields": {
+            "title": "Ytterligare stationsdata",
+            "description": "Välj vilka Tempest-specifika mätvärden som ska sparas med varje väderregistrering.",
+            "illuminance": "Belysningsstyrka",
+            "uvIndex": "UV-index",
+            "solarRadiation": "Solstrålning",
+            "lightningDistance": "Avstånd till blixt",
+            "lightningCount": "Antal blixtnedslag",
+            "windLull": "Lägsta vindhastighet",
+            "localOnly": "Dessa mätvärden kommer direkt från din lokala Tempest-hubb och stannar i BirdNET-Go. De laddas aldrig upp till BirdWeather eller någon annan vädertjänst."
           }
         }
       },

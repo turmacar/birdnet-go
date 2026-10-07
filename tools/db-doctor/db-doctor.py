@@ -127,7 +127,7 @@ V2_EXPECTED_COLUMNS: dict[str, list[str]] = {
         "temp_min", "temp_max", "pressure", "humidity", "visibility",
         "wind_speed", "wind_deg", "wind_gust", "clouds", "precipitation",
         "precipitation_type", "weather_main", "weather_desc", "weather_icon",
-        "created_at",
+        "weather_extras_json", "created_at",
     ],
     "app_metadata": ["key", "value"],
 }
@@ -539,6 +539,7 @@ V2_COLUMN_DEFS: dict[str, dict[str, str]] = {
         "weather_main": "TEXT NOT NULL DEFAULT ''",
         "weather_desc": "TEXT NOT NULL DEFAULT ''",
         "weather_icon": "TEXT NOT NULL DEFAULT ''",
+        "weather_extras_json": "TEXT",
         "created_at": "DATETIME",
     },
     "app_metadata": {

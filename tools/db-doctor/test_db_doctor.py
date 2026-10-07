@@ -62,8 +62,12 @@ _HOURLY_WEATHERS_COLUMNS = [
     "weather_main TEXT NOT NULL DEFAULT ''",
     "weather_desc TEXT NOT NULL DEFAULT ''",
     "weather_icon TEXT NOT NULL DEFAULT ''",
+    "weather_extras_json TEXT",
     "created_at DATETIME",
 ]
+
+# Added to entities.HourlyWeather by the Tempest provider; absent from older v2 databases.
+_HOURLY_WEATHERS_EXTRAS_COLUMN = "weather_extras_json TEXT"
 
 # Added to entities.HourlyWeather in #3495; absent from pre-#3495 databases.
 _HOURLY_WEATHERS_PRECIPITATION_COLUMNS = [
@@ -72,9 +76,12 @@ _HOURLY_WEATHERS_PRECIPITATION_COLUMNS = [
 ]
 
 
-def _build_hourly_weathers(path, *, with_precipitation):
-    """Create an hourly_weathers table with one row, with or without precipitation."""
-    columns = list(_HOURLY_WEATHERS_COLUMNS)
+def _build_hourly_weathers(path, *, with_precipitation, with_extras=True):
+    """Create an hourly_weathers table with one row, with or without optional columns."""
+    columns = [
+        column for column in _HOURLY_WEATHERS_COLUMNS
+        if with_extras or column != _HOURLY_WEATHERS_EXTRAS_COLUMN
+    ]
     if with_precipitation:
         columns += _HOURLY_WEATHERS_PRECIPITATION_COLUMNS
     conn = sqlite3.connect(path)
@@ -278,6 +285,38 @@ class HourlyWeatherSchemaTest(unittest.TestCase):
         self.assertEqual(values, (0.0, ""))
 
         # The repaired schema is clean on a re-check.
+        _, _, recheck = self._run_contamination_check()
+        self.assertEqual(recheck.status, "pass")
+
+    def test_missing_extras_column_is_added_by_fix(self):
+        _build_hourly_weathers(
+            self.path, with_precipitation=True, with_extras=False
+        )
+
+        doctor, report, check = self._run_contamination_check()
+        self.assertEqual(check.status, "fail")
+        self.assertTrue(check.fixable)
+        report.checks.append(check)
+
+        conn = sqlite3.connect(self.path)
+        try:
+            fix = doctor._fix_schema_contamination(conn, report)
+            columns = {
+                row[1]: row for row in conn.execute(
+                    "PRAGMA table_info(hourly_weathers)"
+                )
+            }
+            values = conn.execute(
+                "SELECT temperature, weather_extras_json FROM hourly_weathers"
+            ).fetchone()
+        finally:
+            conn.close()
+
+        self.assertEqual(fix.status, "applied")
+        self.assertEqual(columns["weather_extras_json"][2], "TEXT")
+        self.assertEqual(columns["weather_extras_json"][3], 0)
+        self.assertEqual(values, (12.5, None))
+
         _, _, recheck = self._run_contamination_check()
         self.assertEqual(recheck.status, "pass")
 

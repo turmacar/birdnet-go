@@ -947,7 +947,10 @@
         "wind": "Vind",
         "humidity": "Luftfuktighet",
         "pressure": "Lufttrykk",
-        "cloudCover": "Skydekke"
+        "cloudCover": "Skydekke",
+        "uvIndex": "UV-indeks",
+        "lightningDistance": "Gjennomsnittlig avstand til lynnedslag",
+        "lightningCount": "{count} lynnedslag"
       },
       "units": {
         "temperature": "°C",
@@ -3337,7 +3340,8 @@
             "yrno": "Yr.no",
             "openweather": "OpenWeather",
             "wunderground": "Weather Underground",
-            "pirateweather": "Pirate Weather"
+            "pirateweather": "Pirate Weather",
+            "tempest": "Tempest (local)"
           }
         },
         "wunderground": {
@@ -3376,7 +3380,9 @@
           },
           "openweather": "Bruk av OpenWeather krever en API-nøkkel. Registrer deg for en gratis API-nøkkel på <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Krever en Weather Underground API-nøkkel og en gyldig PWS-stasjon-ID. Se <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> for detaljer.",
-          "pirateweather": "Bruk av Pirate Weather krever en API-nøkkel. Registrer deg på <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>."
+          "pirateweather": "Bruk av Pirate Weather krever en API-nøkkel. Registrer deg på <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
+          "tempest": "Leser sanntidsobservasjoner som kringkastes lokalt over UDP av en Tempest/WeatherFlow-værstasjon på nettverket ditt. Ingen API-nøkkel, konto eller internettforbindelse kreves.",
+          "tempestNetworking": "Krever at birdnet-go-containeren deler LAN-ets kringkastingsdomene (f.eks. Dockers <code>host</code>-nettverk eller et ipvlan/macvlan-nettverk som Unraids <code>br0</code>). Et standard Docker bridge-nettverk vil aldri motta disse kringkastingene, uavhengig av denne innstillingen."
         },
         "apiKey": {
           "label": "API-nøkkel",
@@ -3405,6 +3411,23 @@
           "options": {
             "celsius": "Celsius (°C)",
             "fahrenheit": "Fahrenheit (°F)"
+          }
+        },
+        "tempest": {
+          "listenAddress": {
+            "label": "UDP-lytteadresse",
+            "helpText": "Lokal UDP-adresse å lytte på for Tempest hub-kringkastinger. La stå tomt for å bruke standardverdien \":50222\" (WeatherFlows faste kringkastingsport)."
+          },
+          "extraFields": {
+            "title": "Ytterligere stasjonsdata",
+            "description": "Velg hvilke Tempest-spesifikke målinger som skal lagres med hver værregistrering.",
+            "illuminance": "Belysningsstyrke",
+            "uvIndex": "UV-indeks",
+            "solarRadiation": "Solinnstråling",
+            "lightningDistance": "Avstand til lyn",
+            "lightningCount": "Antall lynnedslag",
+            "windLull": "Laveste vindhastighet",
+            "localOnly": "Disse målingene kommer direkte fra din lokale Tempest-hub og forblir i BirdNET-Go. De lastes aldri opp til BirdWeather eller en annen værtjeneste."
           }
         }
       },

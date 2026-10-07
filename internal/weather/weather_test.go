@@ -2,6 +2,7 @@ package weather
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"sync"
 	"testing"
@@ -37,6 +38,7 @@ func TestNewService(t *testing.T) {
 		{"openweather_provider", "openweather", false},
 		{"wunderground_provider", "wunderground", false},
 		{"pirateweather_provider", string(conf.WeatherPirateWeather), false},
+		{"tempest_provider", string(conf.WeatherTempest), false},
 		{"invalid_provider_disabled", "invalid", true},
 		{"empty_provider_defaults_to_yrno", "", false},
 		{"none_provider_disabled", "none", true},
@@ -209,7 +211,7 @@ func TestWeatherDataCreation(t *testing.T) {
 
 // TestSettingsCreation tests the creation of test settings.
 func TestSettingsCreation(t *testing.T) {
-	providers := []string{"yrno", "openweather", "wunderground", string(conf.WeatherPirateWeather)}
+	providers := []string{"yrno", "openweather", "wunderground", string(conf.WeatherPirateWeather), string(conf.WeatherTempest)}
 
 	for _, provider := range providers {
 		t.Run(provider, func(t *testing.T) {
@@ -274,6 +276,35 @@ func TestService_SaveWeatherData(t *testing.T) {
 		err := service.saveWeatherData(testData)
 
 		require.NoError(t, err)
+		mockDB.AssertExpectations(t)
+	})
+
+	t.Run("tempest_persists_only_selected_extra_fields", func(t *testing.T) {
+		mockDB := mocks.NewMockInterface(t)
+		settings := createTestSettings(t, "tempest", func(s *conf.Settings) {
+			s.Realtime.Weather.Tempest.ExtraFields.Illuminance = true
+			s.Realtime.Weather.Tempest.ExtraFields.UVIndex = true
+		})
+		service := &Service{
+			provider: &TempestProvider{receivedAt: time.Now(), extras: &TempestExtras{
+				Illuminance:    1234,
+				UVIndex:        4.2,
+				SolarRadiation: 567,
+			}},
+			db:       mockDB,
+			settings: settings,
+		}
+
+		mockDB.On("SaveDailyEvents", mock.Anything).Run(func(args mock.Arguments) {
+			args.Get(0).(*datastore.DailyEvents).ID = 123
+		}).Return(nil).Once()
+		mockDB.On("SaveHourlyWeather", mock.Anything).Run(func(args mock.Arguments) {
+			hw := args.Get(0).(*datastore.HourlyWeather)
+			assert.NotNil(t, hw.WeatherExtrasJSON)
+			assert.JSONEq(t, `{"illuminance":1234,"uv_index":4.2}`, *hw.WeatherExtrasJSON)
+		}).Return(nil).Once()
+
+		require.NoError(t, service.saveWeatherData(createTestWeatherData(t)))
 		mockDB.AssertExpectations(t)
 	})
 
@@ -1213,6 +1244,178 @@ func TestReconcileConfig_KeepsPreviousProviderOnUnsupportedValue(t *testing.T) {
 		"an unsupported configured provider should keep the previous provider active")
 }
 
+// TestReconcileConfig_StartsLifecyclerOnMidRunSwap verifies a mid-run swap to
+// a background-push provider (e.g. Tempest) starts that provider's listener:
+// StartPolling's Lifecycler check only runs once, at startup, against
+// whichever provider was active then. reconcileConfig must itself start a
+// newly swapped-in Lifecycler provider using the same long-lived context
+// StartPolling recorded, or the provider silently never receives any data
+// until the process is restarted.
+func TestReconcileConfig_StartsLifecyclerOnMidRunSwap(t *testing.T) {
+	settings := createTestSettings(t, yrNoProviderName)
+	svc, err := NewService(settings, nil, nil)
+	require.NoError(t, err)
+	require.Equal(t, yrNoProviderName, svc.activeProviderName())
+
+	// Simulate StartPolling already being underway with a long-lived ctx,
+	// without actually running its ticker loop.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	svc.setStartCtx(ctx)
+
+	// Reserve a free loopback UDP port for the swapped-in Tempest provider.
+	addr := freeLoopbackUDPAddr(t)
+
+	changed := createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = addr
+	})
+	svc.reconcileConfig(changed)
+
+	require.Equal(t, tempestProviderName, svc.activeProviderName())
+
+	// If reconcileConfig started the listener, a real UDP packet sent to addr
+	// should be observable via FetchWeather shortly after.
+	require.Eventually(t, func() bool {
+		conn, dialErr := net.Dial("udp", addr)
+		if dialErr != nil {
+			return false
+		}
+		defer func() { _ = conn.Close() }()
+		_, writeErr := conn.Write(sampleObsSTPacket(time.Now().Unix()))
+		return writeErr == nil
+	}, 2*time.Second, 20*time.Millisecond, "swapped-in Tempest listener should be bound and accepting packets")
+
+	provider, _ := svc.activeProvider()
+	require.Eventually(t, func() bool {
+		_, fetchErr := provider.FetchWeather(t.Context(), changed)
+		return fetchErr == nil
+	}, 2*time.Second, 20*time.Millisecond,
+		"reconcileConfig should have started the Tempest listener so the sent packet is observed")
+}
+
+// TestReconcileConfig_DoesNotStartLifecyclerBeforePollingBegins verifies that
+// a provider swap before StartPolling has ever run (getStartCtx returns nil)
+// does not attempt to start the new Lifecycler provider with a nil context;
+// StartPolling's own one-time check covers this case once polling begins.
+func TestReconcileConfig_DoesNotStartLifecyclerBeforePollingBegins(t *testing.T) {
+	settings := createTestSettings(t, yrNoProviderName)
+	svc, err := NewService(settings, nil, nil)
+	require.NoError(t, err)
+
+	changed := createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = "127.0.0.1:0"
+	})
+
+	require.NotPanics(t, func() {
+		svc.reconcileConfig(changed)
+	})
+	assert.Equal(t, tempestProviderName, svc.activeProviderName())
+}
+
+// newRunningTempestService returns a Service whose active Tempest provider is
+// bound to addr under a polling context, as StartPolling leaves it.
+func newRunningTempestService(t *testing.T, addr string) *Service {
+	t.Helper()
+	settings := createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = addr
+	})
+	svc, err := NewService(settings, nil, nil)
+	require.NoError(t, err)
+
+	svc.setStartCtx(t.Context())
+	provider, _ := svc.activeProvider()
+	svc.startProviderLifecycle(t.Context(), provider)
+	require.False(t, isLifecycleStopped(provider))
+	return svc
+}
+
+// TestReconcileConfig_KeepsRunningTempestWhenAddressUnchanged guards against a
+// spurious rebind on the first cycle after startup.
+func TestReconcileConfig_KeepsRunningTempestWhenAddressUnchanged(t *testing.T) {
+	addr := freeLoopbackUDPAddr(t)
+	svc := newRunningTempestService(t, addr)
+	before, _ := svc.activeProvider()
+
+	svc.reconcileConfig(createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = addr
+	}))
+
+	after, _ := svc.activeProvider()
+	assert.Same(t, before, after, "an unchanged address must not replace the provider")
+	assert.False(t, isLifecycleStopped(after))
+}
+
+// TestReconcileConfig_RebindsTempestOnAddressChange verifies that changing only
+// the listen address releases the old socket and binds the new one.
+func TestReconcileConfig_RebindsTempestOnAddressChange(t *testing.T) {
+	oldAddr := freeLoopbackUDPAddr(t)
+	svc := newRunningTempestService(t, oldAddr)
+	newAddr := freeLoopbackUDPAddr(t)
+
+	svc.reconcileConfig(createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = newAddr
+	}))
+
+	requirePortFree(t, oldAddr)
+	provider, _ := svc.activeProvider()
+	tempest, ok := provider.(*TempestProvider)
+	require.True(t, ok)
+	assert.Equal(t, newAddr, tempest.listenAddress)
+	assert.False(t, isLifecycleStopped(tempest), "the replacement listener must be running")
+}
+
+// TestReconcileConfig_KeepsTempestOnUnsupportedValueWithAddressChange guards
+// against installing a nil provider when an unsupported provider value arrives
+// together with a new Tempest address.
+func TestReconcileConfig_KeepsTempestOnUnsupportedValueWithAddressChange(t *testing.T) {
+	svc := newRunningTempestService(t, freeLoopbackUDPAddr(t))
+	before, _ := svc.activeProvider()
+
+	svc.reconcileConfig(createTestSettings(t, "not-a-real-provider", func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = freeLoopbackUDPAddr(t)
+	}))
+
+	after, name := svc.activeProvider()
+	assert.Same(t, before, after)
+	assert.Equal(t, tempestProviderName, name)
+	assert.False(t, isLifecycleStopped(after))
+}
+
+// TestReconcileConfig_RestartsStoppedTempestListener verifies that a listener
+// that stopped (for example after a failed bind) is started again on the next
+// reconcile while the configuration is unchanged.
+func TestReconcileConfig_RestartsStoppedTempestListener(t *testing.T) {
+	addr := freeLoopbackUDPAddr(t)
+	svc := newRunningTempestService(t, addr)
+	svc.stopProviderLifecycle()
+	provider, _ := svc.activeProvider()
+	require.True(t, isLifecycleStopped(provider))
+
+	svc.reconcileConfig(createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = addr
+	}))
+
+	assert.False(t, isLifecycleStopped(provider), "reconcile must restart a stopped listener")
+}
+
+// TestReconcileConfig_SwitchBackToTempestRebinds covers switching away from
+// Tempest and straight back: the old socket must be released before the new
+// provider binds.
+func TestReconcileConfig_SwitchBackToTempestRebinds(t *testing.T) {
+	addr := freeLoopbackUDPAddr(t)
+	svc := newRunningTempestService(t, addr)
+
+	svc.reconcileConfig(createTestSettings(t, yrNoProviderName))
+	requirePortFree(t, addr)
+
+	svc.reconcileConfig(createTestSettings(t, tempestProviderName, func(s *conf.Settings) {
+		s.Realtime.Weather.Tempest.ListenAddress = addr
+	}))
+	provider, name := svc.activeProvider()
+	assert.Equal(t, tempestProviderName, name)
+	assert.False(t, isLifecycleStopped(provider), "switching back must bind the released port")
+}
+
 // TestWundergroundProvider_HTTP204_NoContent tests that Wunderground returns
 // ErrWeatherNoData for HTTP 204.
 func TestWundergroundProvider_HTTP204_NoContent(t *testing.T) {
@@ -1324,6 +1527,22 @@ func TestRegisterUnregisterService(t *testing.T) {
 	ok, msg = GetStatus()
 	assert.False(t, ok)
 	assert.Contains(t, msg, "not started")
+}
+
+func TestWaitForTempestObservation_UsesRegisteredProviderCache(t *testing.T) {
+	settings := createTestSettings(t, "tempest")
+	want := createTestWeatherData(t)
+	provider := &TempestProvider{
+		latest:     want,
+		receivedAt: time.Now(),
+	}
+	RegisterService(&Service{provider: provider})
+	t.Cleanup(UnregisterService)
+
+	got, err := WaitForTempestObservation(t.Context(), settings, time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, want.Time, got.Time)
+	assert.InDelta(t, want.Temperature.Current, got.Temperature.Current, 0.001)
 }
 
 // =============================================================================

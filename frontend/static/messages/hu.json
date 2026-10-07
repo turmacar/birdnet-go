@@ -947,7 +947,10 @@
         "wind": "Szél",
         "humidity": "Páratartalom",
         "pressure": "Légnyomás",
-        "cloudCover": "Felhőborítottság"
+        "cloudCover": "Felhőborítottság",
+        "uvIndex": "UV-index",
+        "lightningDistance": "Átlagos villámcsapás-távolság",
+        "lightningCount": "{count} villámcsapás"
       },
       "units": {
         "temperature": "°C",
@@ -3337,7 +3340,8 @@
             "yrno": "Yr.no",
             "openweather": "OpenWeather",
             "wunderground": "Weather Underground",
-            "pirateweather": "Pirate Weather"
+            "pirateweather": "Pirate Weather",
+            "tempest": "Tempest (local)"
           }
         },
         "wunderground": {
@@ -3376,7 +3380,9 @@
           },
           "openweather": "Az OpenWeather használatához API kulcs szükséges, regisztráljon ingyenes API kulcsért a <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a> oldalon.",
           "wunderground": "Weather Underground API kulcs és érvényes PWS állomás ID szükséges. Lásd <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> részletekért.",
-          "pirateweather": "A Pirate Weather használatához API kulcs szükséges, regisztráljon a <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a> oldalon."
+          "pirateweather": "A Pirate Weather használatához API kulcs szükséges, regisztráljon a <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a> oldalon.",
+          "tempest": "Élő megfigyeléseket olvas, amelyeket a hálózaton lévő Tempest/WeatherFlow időjárás-állomás helyileg, UDP-n keresztül sugároz. Nincs szükség API-kulcsra, fiókra vagy internetkapcsolatra.",
+          "tempestNetworking": "Megköveteli, hogy a birdnet-go konténer megossza a LAN broadcast tartományát (pl. Docker <code>host</code> hálózat vagy ipvlan/macvlan hálózat, mint az Unraid <code>br0</code>). Egy szabványos Docker bridge hálózat soha nem fogadja ezeket a broadcastokat, függetlenül ettől a beállítástól."
         },
         "apiKey": {
           "label": "API kulcs",
@@ -3405,6 +3411,23 @@
           "options": {
             "celsius": "Celsius (°C)",
             "fahrenheit": "Fahrenheit (°F)"
+          }
+        },
+        "tempest": {
+          "listenAddress": {
+            "label": "UDP figyelési cím",
+            "helpText": "Helyi UDP-cím, amelyen a Tempest hub broadcastjait figyeli. Hagyja üresen az alapértelmezett \":50222\" használatához (a WeatherFlow rögzített broadcast portja)."
+          },
+          "extraFields": {
+            "title": "További állomásadatok",
+            "description": "Válassza ki, hogy mely Tempest-specifikus mérési értékek legyenek eltárolva az egyes időjárási rekordokkal.",
+            "illuminance": "Megvilágítás",
+            "uvIndex": "UV-index",
+            "solarRadiation": "Napsugárzás",
+            "lightningDistance": "Villám távolsága",
+            "lightningCount": "Villámcsapások száma",
+            "windLull": "Minimális szélsebesség",
+            "localOnly": "Ezek a mérési értékek közvetlenül a helyi Tempest központból származnak, és a BirdNET-Go rendszerben maradnak. Soha nem kerülnek feltöltésre a BirdWeather vagy más időjárási szolgáltatás számára."
           }
         }
       },

@@ -947,7 +947,10 @@
         "wind": "Vento",
         "humidity": "Humidade",
         "pressure": "Pressão",
-        "cloudCover": "Cobertura de Nuvens"
+        "cloudCover": "Cobertura de Nuvens",
+        "uvIndex": "Índice UV",
+        "lightningDistance": "Distância média dos raios",
+        "lightningCount": "{count} raio(s)"
       },
       "units": {
         "temperature": "°C",
@@ -3337,7 +3340,8 @@
             "yrno": "Yr.no",
             "openweather": "OpenWeather",
             "wunderground": "Weather Underground",
-            "pirateweather": "Pirate Weather"
+            "pirateweather": "Pirate Weather",
+            "tempest": "Tempest (local)"
           }
         },
         "wunderground": {
@@ -3376,7 +3380,9 @@
           },
           "openweather": "O uso do OpenWeather requer uma chave de API. Inscreva-se para uma chave de API gratuita em <a href=\"https://home.openweathermap.org/users/sign_up\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">OpenWeather</a>.",
           "wunderground": "Requer uma chave API do Weather Underground e um ID de estação PWS válido. Veja <a href=\"https://www.wunderground.com/member/devices\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Weather Underground</a> para detalhes.",
-          "pirateweather": "O uso do Pirate Weather requer uma chave de API, inscreva-se em <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>."
+          "pirateweather": "O uso do Pirate Weather requer uma chave de API, inscreva-se em <a href=\"https://pirateweather.net/\" class=\"link link-primary\" target=\"_blank\" rel=\"noopener noreferrer\">Pirate Weather</a>.",
+          "tempest": "Lê observações em tempo real transmitidas localmente via UDP por uma estação meteorológica Tempest/WeatherFlow na sua rede. Não é necessária chave de API, conta ou ligação à internet.",
+          "tempestNetworking": "Requer que o contentor birdnet-go partilhe o domínio de difusão da sua LAN (por exemplo, rede <code>host</code> do Docker ou uma rede ipvlan/macvlan como o <code>br0</code> do Unraid). Uma rede bridge padrão do Docker nunca receberá estas transmissões, independentemente desta definição."
         },
         "apiKey": {
           "label": "Chave de API",
@@ -3405,6 +3411,23 @@
           "options": {
             "celsius": "Celsius (°C)",
             "fahrenheit": "Fahrenheit (°F)"
+          }
+        },
+        "tempest": {
+          "listenAddress": {
+            "label": "Endereço de escuta UDP",
+            "helpText": "Endereço UDP local a escutar para transmissões do hub Tempest. Deixe em branco para usar o padrão \":50222\" (a porta de difusão fixa da WeatherFlow)."
+          },
+          "extraFields": {
+            "title": "Dados adicionais da estação",
+            "description": "Selecione quais medições específicas do Tempest devem ser armazenadas com cada registro meteorológico.",
+            "illuminance": "Iluminância",
+            "uvIndex": "Índice UV",
+            "solarRadiation": "Radiação solar",
+            "lightningDistance": "Distância dos raios",
+            "lightningCount": "Número de raios",
+            "windLull": "Velocidade mínima do vento",
+            "localOnly": "Estas medições vêm diretamente do seu hub Tempest local e permanecem no BirdNET-Go. Elas nunca são enviadas ao BirdWeather nem a outro serviço meteorológico."
           }
         }
       },
