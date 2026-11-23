@@ -372,11 +372,15 @@ func declaresModelFile(files []CatalogFile, localName string) bool {
 // entry.Files. Callers that stop at the first match (isGalleryManagedPath) are
 // unaffected by no longer searching the default variant twice, because the default
 // remains one of the returned variant sets.
+//
+// Live variants' file sets come before Legacy ones, in catalog order within each
+// group, so a caller that stops at the first set found on disk (the orchestrator's
+// path resolution) prefers a live build over a leftover Legacy one.
 func entryFileSets(entry *CatalogEntry) [][]CatalogFile {
 	if len(entry.Variants) > 0 {
 		sets := make([][]CatalogFile, 0, len(entry.Variants))
-		for j := range entry.Variants {
-			sets = append(sets, entry.Variants[j].Files)
+		for v := range liveFirstVariants(entry.Variants) {
+			sets = append(sets, v.Files)
 		}
 		return sets
 	}
@@ -598,10 +602,13 @@ func (o *Orchestrator) resolvePrimaryModelPath(configured string) pathResolution
 // Runtime when OpenVINO declines, so an openvino-tagged build on an A76/Pi5 or an
 // Intel iGPU runs these variants with no ORT installed at all (except an INT8 or
 // unrecognized-precision build on the auto backend, which OpenVINO declines; see
-// applyOpenVINOQuantizationPolicy). Gating on ORT alone would refuse a variant
-// that would have loaded, silently dropping such a host to
-// the embedded model and telling the user no installed model was available, which
-// is false.
+// applyOpenVINOQuantizationPolicy). On arm64 the auto backend with the default
+// device plans the A76 CPU only when ONNX Runtime is unavailable, which is exactly
+// this case; the plan
+// takes its ONNX Runtime answer from the same function as the ONNX Runtime leg
+// below, so the two cannot disagree. Gating on ORT alone would refuse a variant
+// that would have loaded, silently dropping such a host to the embedded model and
+// telling the user no installed model was available, which is false.
 //
 // CheckORTAvailability is used rather than checkORTOrFail because the latter logs
 // and raises a user notification, which would be wrong for a path we are choosing
@@ -629,15 +636,15 @@ func (o *Orchestrator) primaryVariantUsable(modelPath string) bool {
 	// OpenVINO library straight to the ONNX path it has no runtime for, which is
 	// the hard startup failure this gate exists to prevent, reached from the other
 	// side. So the plan must be usable AND the library must actually load.
-	if _, ok, _ := birdnetV24OpenVINOPlan(&settings.BirdNET, detectQuantization(modelPath)); ok &&
+	available := o.ortAvailable
+	if available == nil {
+		available = defaultORTAvailable
+	}
+	if _, ok, _ := birdnetV24OpenVINOPlan(&settings.BirdNET, detectQuantization(modelPath), available); ok &&
 		o.openVINOLoads(settings.BirdNET.OpenVINOPath) {
 		return true
 	}
 
-	available := o.ortAvailable
-	if available == nil {
-		available = func(path string) bool { return inference.CheckORTAvailability(path).Available }
-	}
 	if available(settings.BirdNET.ONNXRuntimePath) {
 		return true
 	}

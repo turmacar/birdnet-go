@@ -3,7 +3,7 @@
 ## Tarball Contents
 
 - `birdnet-go` - application binary
-- `libonnxruntime.so` - ONNX Runtime library (required for Perch v2, BattyBirdNET, and geomodel features)
+- `libonnxruntime.so` - ONNX Runtime library (required for BirdNET+ v3.0, Perch v2, BattyBirdNET, BSG-BAT, and geomodel features)
 - `libtensorflowlite_c.so` - TensorFlow Lite C library (required for BirdNET v2.4)
 
 ## Quick Install
@@ -13,6 +13,8 @@
 tar xzf birdnet-go-linux-*.tar.gz
 
 # Install shared libraries system-wide
+# Remove the old link first, so the copy does not write into an older versioned file
+sudo rm -f /usr/local/lib/libonnxruntime.so
 sudo cp libonnxruntime.so libtensorflowlite_c.so /usr/local/lib/
 sudo ldconfig
 
@@ -34,6 +36,8 @@ Copy the bundled `.so` files to a directory in the system library search path
 and update the linker cache:
 
 ```bash
+# Remove the old link first, so the copy does not write into an older versioned file
+sudo rm -f /usr/local/lib/libonnxruntime.so
 sudo cp libonnxruntime.so libtensorflowlite_c.so /usr/local/lib/
 sudo ldconfig
 ```
@@ -123,6 +127,8 @@ sudo systemctl enable --now birdnet-go
 The library is not in the linker search path. Run:
 
 ```bash
+# Remove the old link first, so the copy does not write into an older versioned file
+sudo rm -f /usr/local/lib/libonnxruntime.so
 sudo cp libonnxruntime.so /usr/local/lib/
 sudo ldconfig
 ```

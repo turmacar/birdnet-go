@@ -2,6 +2,8 @@
  * Shared sample rate constants and utilities for device capabilities.
  */
 
+import { buildAppUrl } from '$lib/utils/urlHelpers';
+
 export const CANDIDATE_SAMPLE_RATES = [48000, 96000, 192000, 256000, 384000] as const;
 
 /** Conventional default capture rate, supported by virtually every device. */
@@ -38,7 +40,9 @@ export async function fetchDeviceCapabilities(
 ): Promise<DeviceCapabilitiesResult> {
   try {
     const response = await fetch(
-      `/api/v2/system/audio/devices/capabilities?deviceId=${encodeURIComponent(deviceId)}`,
+      buildAppUrl(
+        `/api/v2/system/audio/devices/capabilities?deviceId=${encodeURIComponent(deviceId)}`
+      ),
       signal ? { signal } : undefined
     );
 
@@ -102,4 +106,22 @@ export function coerceSupportedRate(options: SampleRateOption[], current: number
   }
   const preferred = options.find(opt => Number(opt.value) === DEFAULT_SAMPLE_RATE) ?? options[0];
   return Number(preferred.value);
+}
+
+/**
+ * Highest minimum source capture rate in Hz among the selected models, or 0
+ * when none of them sets one. A source is only usable by every selected model
+ * at or above this rate. Selected IDs that match no model in the list are ignored.
+ */
+export function highestMinSampleRate(
+  models: ReadonlyArray<{ id: string; minSampleRate?: number }>,
+  selectedIds: readonly string[]
+): number {
+  let highest = 0;
+  for (const model of models) {
+    if (selectedIds.includes(model.id)) {
+      highest = Math.max(highest, model.minSampleRate ?? 0);
+    }
+  }
+  return highest;
 }

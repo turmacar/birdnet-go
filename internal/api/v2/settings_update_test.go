@@ -193,10 +193,35 @@ func TestPatchSectionPreservesOmittedFields(t *testing.T) {
 			},
 		},
 		{
+			name:    "playback denoise switched off applies the body strength and stays in the JSON",
+			section: "dashboard",
+			seed: func(s *conf.Settings) {
+				s.Realtime.Dashboard.Thumbnails.ImageProvider = "wikimedia"
+				s.Realtime.Dashboard.PlaybackDenoise = conf.DenoiseSettings{Enabled: true, Strength: conf.DenoisePresetHeavy}
+			},
+			body: map[string]any{"playbackDenoise": map[string]any{"enabled": false, "strength": conf.DenoisePresetLight}},
+			changed: func(t *testing.T, s *conf.Settings) {
+				t.Helper()
+				assert.False(t, s.Realtime.Dashboard.PlaybackDenoise.Enabled)
+				assert.Equal(t, conf.DenoisePresetLight, s.Realtime.Dashboard.PlaybackDenoise.Strength)
+				// An off value must not vanish from GET /settings (no omitempty).
+				assert.Contains(t, marshaled(t, s.Realtime.Dashboard), `"playbackDenoise":{"enabled":false,"strength":"light"}`)
+			},
+			preserved: func(t *testing.T, s *conf.Settings) any {
+				t.Helper()
+				return s.Realtime.Dashboard.Thumbnails.ImageProvider
+			},
+		},
+		{
 			name:    "empty body changes nothing",
 			section: "dashboard",
-			seed:    func(s *conf.Settings) { s.Realtime.Dashboard.Thumbnails.ImageProvider = "wikimedia" },
-			body:    map[string]any{},
+			seed: func(s *conf.Settings) {
+				s.Realtime.Dashboard.Thumbnails.ImageProvider = "wikimedia"
+				// A loaded config always carries a strength (the defaults set one);
+				// validation heals an empty one, which would count as a change here.
+				s.Realtime.Dashboard.PlaybackDenoise.Strength = conf.DefaultDenoisePreset
+			},
+			body: map[string]any{},
 			preserved: func(t *testing.T, s *conf.Settings) any {
 				t.Helper()
 				return marshaled(t, s.Realtime.Dashboard)
@@ -385,6 +410,45 @@ func TestPatchNestedObjectKeepsSiblingSlices(t *testing.T) {
 	assert.Equal(t, "LowPass", eq.Filters[1].Type)
 	assert.InDelta(t, 14000.0, eq.Filters[1].Frequency, 0.001)
 	assert.Equal(t, 2, eq.Filters[1].Passes)
+}
+
+// TestPatchDashboardPlaybackDefaults pins the dashboard PATCH for the playback
+// defaults: a negative gain inside the range is kept, values outside it are
+// clamped, the nested playback object takes the cutoff and the two older
+// defaults next to it stay untouched when the body does not name them.
+func TestPatchDashboardPlaybackDefaults(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           map[string]any
+		wantGain       float64
+		wantHighPassHz int
+	}{
+		{"negative gain kept", map[string]any{"defaultAudioGain": -6.5}, -6.5, 300},
+		{"gain below the minimum clamped", map[string]any{"defaultAudioGain": -20}, -12, 300},
+		{"gain above the maximum clamped", map[string]any{"defaultAudioGain": 30}, 24, 300},
+		{"nested cutoff merged, gain untouched", map[string]any{"playback": map[string]any{"highPassHz": 500}}, 3, 500},
+		{"cutoff above the maximum clamped", map[string]any{"playback": map[string]any{"highPassHz": 9000}}, 3, 5000},
+		{"cutoff below the floor is off", map[string]any{"playback": map[string]any{"highPassHz": 15}}, 3, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := echo.New()
+			controller := getTestController(t, e)
+			dashboard := &controller.Settings.Load().Realtime.Dashboard
+			dashboard.DefaultAudioGain = 3
+			dashboard.Playback.HighPassHz = 300
+			dashboard.PlaybackDenoise = conf.DenoiseSettings{Enabled: true, Strength: conf.DenoisePresetHeavy}
+
+			patchSection(t, e, controller, "dashboard", tt.body)
+
+			got := controller.Settings.Load().Realtime.Dashboard
+			assert.InDelta(t, tt.wantGain, got.DefaultAudioGain, 1e-9)
+			assert.Equal(t, tt.wantHighPassHz, got.Playback.HighPassHz)
+			assert.True(t, got.PlaybackDenoise.Enabled, "the denoise default must stay untouched")
+			assert.Equal(t, conf.DenoisePresetHeavy, got.PlaybackDenoise.Strength)
+		})
+	}
 }
 
 // TestStreamsSettingsChanged_DetectsModelEdits verifies that per-stream model

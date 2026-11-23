@@ -82,6 +82,37 @@ func validateRealtimeSettings(settings *RealtimeSettings) error {
 		return err
 	}
 
+	// Validate model consensus settings
+	if err := validateModelConsensusSettings(&settings.ModelConsensus); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validModelConsensusMinModels reports whether n is an accepted minmodels value.
+func validModelConsensusMinModels(n int) bool {
+	return n >= MinModelConsensusMinModels && n <= MaxModelConsensusMinModels
+}
+
+// validateModelConsensusSettings rejects a minmodels value outside the accepted
+// range when the filter is enabled, and also when a non-zero value is saved while
+// it is off, so an unusable value is refused when it is sent and not only when a
+// later request switches the filter on. Zero means unset: it is accepted while the
+// filter is off and rejected once it is on. Load normalizes the value first, so
+// this only fires for settings saved through the API.
+func validateModelConsensusSettings(settings *ModelConsensusSettings) error {
+	if !settings.Enabled() && settings.MinModels == 0 {
+		return nil
+	}
+	if !validModelConsensusMinModels(settings.MinModels) {
+		return errors.Newf("model consensus minModels must be between %d and %d, got %d",
+			MinModelConsensusMinModels, MaxModelConsensusMinModels, settings.MinModels).
+			Category(errors.CategoryValidation).
+			Context("validation_type", "model-consensus-min-models").
+			Context("min_models", settings.MinModels).
+			Build()
+	}
 	return nil
 }
 
@@ -219,16 +250,39 @@ func validateDashboardSettings(settings *Dashboard) error {
 	}
 
 	// Validate default audio gain (playback UI preference)
-	if math.IsNaN(settings.DefaultAudioGain) || math.IsInf(settings.DefaultAudioGain, 0) || settings.DefaultAudioGain < MinPlaybackGain || settings.DefaultAudioGain > MaxPlaybackGain {
+	// A value that is not a finite number falls back to the safe default, so a
+	// corrupt value never attenuates or boosts every clip.
+	if math.IsNaN(settings.DefaultAudioGain) || math.IsInf(settings.DefaultAudioGain, 0) {
+		GetLogger().Warn("Dashboard DefaultAudioGain is not a finite number, using default",
+			logger.Float64("invalid_value", settings.DefaultAudioGain),
+			logger.Float64("default", DefaultPlaybackGain))
+		settings.DefaultAudioGain = DefaultPlaybackGain
+	} else if settings.DefaultAudioGain < MinPlaybackGain || settings.DefaultAudioGain > MaxPlaybackGain {
 		GetLogger().Warn("Dashboard DefaultAudioGain out of range, clamping to safe value",
 			logger.Float64("invalid_value", settings.DefaultAudioGain),
 			logger.Float64("min", MinPlaybackGain),
 			logger.Float64("max", MaxPlaybackGain))
-		if math.IsNaN(settings.DefaultAudioGain) || math.IsInf(settings.DefaultAudioGain, 0) || settings.DefaultAudioGain < MinPlaybackGain {
-			settings.DefaultAudioGain = MinPlaybackGain
+		settings.DefaultAudioGain = min(max(settings.DefaultAudioGain, MinPlaybackGain), MaxPlaybackGain)
+	}
+
+	// Default playback high-pass cutoff (applied in the browser only): the
+	// player's floor is its off position, so a value at or below the floor is
+	// stored as off, and anything above the maximum is clamped to it.
+	if hz := settings.Playback.HighPassHz; hz != PlaybackHighPassOffHz && (hz <= PlaybackHighPassFloorHz || hz > MaxPlaybackHighPassHz) {
+		GetLogger().Warn("Dashboard playback HighPassHz out of range, normalizing",
+			logger.Int("invalid_value", hz),
+			logger.Int("floor", PlaybackHighPassFloorHz),
+			logger.Int("max", MaxPlaybackHighPassHz))
+		if hz <= PlaybackHighPassFloorHz {
+			settings.Playback.HighPassHz = PlaybackHighPassOffHz
 		} else {
-			settings.DefaultAudioGain = MaxPlaybackGain
+			settings.Playback.HighPassHz = MaxPlaybackHighPassHz
 		}
+	}
+
+	// Playback denoise strength: heal an empty value, reject an unknown one.
+	if err := normalizeAndValidateDenoiseStrength(&settings.PlaybackDenoise, "realtime.dashboard.playbackdenoise.strength"); err != nil {
+		return err
 	}
 
 	// Validate spectrogram settings

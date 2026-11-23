@@ -118,7 +118,7 @@ All audio infrastructure lives in `internal/audiocore`. (The older `myaudio` pac
 **From frames to analysis windows.**
 
 1. `analysis.BufferConsumer` is registered per source. It resamples to each enabled model's sample rate (one resampler per distinct target rate) and writes PCM16 to a per-source, per-model analysis buffer and to the source's capture buffer.
-2. The analysis buffer is a ring sized to one model clip, in overwrite mode. A monitor goroutine per source and model polls it and reads a full window when one is available. The window is 3 seconds for BirdNET v2.4, Bat and BSG, and 5 seconds for BirdNET v3 and Perch. The `birdnet.overlap` setting (default none) is scaled proportionally for 5 second models.
+2. The analysis buffer is a ring sized to one model clip, in overwrite mode. A monitor goroutine per source and model polls it and reads a full window when one is available. The window is 3 seconds for BirdNET v2.4, Bat and BSG, and 5 seconds for BirdNET v3, BirdNET+ v3.0 and Perch. The `birdnet.overlap` setting (default none) is scaled proportionally for 5 second models.
 3. The capture buffer holds recent audio (120 seconds by default, longer with extended capture) so that a clip can be cut with pre-roll when a detection is saved.
 
 **Other consumers on a route** include audio level metering (the live level meter in the UI), sound level monitoring (`internal/analysis/sound_level*.go`), and live listening, which is served as HLS (see the API section). Sound level series exposed to Prometheus are labelled with the source id, never the display name, because the metrics listener has no authentication.
@@ -131,17 +131,19 @@ All audio infrastructure lives in `internal/audiocore`. (The older `myaudio` pac
 
 `internal/classifier` owns models and prediction. `internal/inference` defines the backend abstraction and the runtime implementations.
 
-**Orchestrator and model manager.** `classifier.Orchestrator` is the entry point for inference. It manages one or more loaded models with per-model locking, name resolution to a common species identity, hot reload and failover. `ModelManager` handles the model catalog, installation, variant and primary swaps, and uninstalling, driven from the settings UI and API.
+**Orchestrator and model manager.** `classifier.Orchestrator` is the entry point for inference. It manages one or more loaded models with per-model locking, name resolution to a common species identity, hot reload and failover. `ModelManager` handles the model catalog, installation, model and variant swaps, and uninstalling, driven from the settings UI and API.
 
 **Models.** The registry knows these model families; which ones run is chosen by `models.enabled` and the per-model settings sections:
 
-| Model        | Format | Clip | Notes                                                          |
-| ------------ | ------ | ---- | -------------------------------------------------------------- |
-| BirdNET v2.4 | TFLite | 3 s  | Default. FP32 model and range filter models are embedded.      |
-| BirdNET v3   | ONNX   | 5 s  | Downloaded.                                                    |
-| Perch v2     | ONNX   | 5 s  | Downloaded.                                                    |
-| Bat          | ONNX   | 3 s  | Ultrasonic source; gated by a night-time schedule. Downloaded. |
-| BSG Finland  | ONNX   | 3 s  | Regional model. Downloaded.                                    |
+| Model         | Format | Clip   | Notes                                                                                   |
+| ------------- | ------ | ------ | --------------------------------------------------------------------------------------- |
+| BirdNET v2.4  | TFLite | 3 s    | Default. FP32 model and range filter models are embedded.                               |
+| BirdNET v3    | ONNX   | 5 s    | Downloaded.                                                                             |
+| BirdNET+ v3.0 | ONNX   | 5 s    | Own settings section (`birdnetplus`).                                                   |
+| Perch v2      | ONNX   | 5 s    | Downloaded.                                                                             |
+| Bat           | ONNX   | 3 s    | Ultrasonic source; gated by a night-time schedule. Downloaded.                          |
+| BSG-BAT       | ONNX   | 1.02 s | European bat classifier (384 kHz ultrasonic; `bsgbat` settings, nighttime). Downloaded. |
+| BSG Finland   | ONNX   | 3 s    | Regional model. Downloaded.                                                             |
 
 Regional BirdNET v2.4 variants and geographic range models exist in the catalog. Non-embedded models are fetched from Hugging Face by the model manager. Building with the `noembed` tag leaves the embedded models out for smaller binaries and images; the Docker image ships them separately.
 
@@ -149,13 +151,13 @@ Regional BirdNET v2.4 variants and geographic range models exist in the catalog.
 
 - **TFLite** through `go-tflite` (CGO), built unless the `notflite` tag is set. Used for BirdNET v2.4.
 - **ONNX Runtime** through `onnxruntime_go`, loaded as a shared library (`task download-onnxruntime`).
-- **OpenVINO** behind the `openvino` build tag, loaded at runtime, with ONNX Runtime as the fallback when the library is absent. Selected with `birdnet.backend` (`auto`, `onnx`, `openvino`). The default Linux amd64 and arm64 builds carry the tag.
+- **OpenVINO** behind the `openvino` build tag, loaded at runtime, with ONNX Runtime as the fallback when the library is absent. Selected with `birdnet.backend` (`auto`, `onnx`, `openvino`). The default Linux amd64, Linux arm64 and Windows amd64 builds carry the tag.
 
 `internal/hwprofile` decides which model builds a machine can run.
 
 **Species range filter.** A geographic and seasonal model (`classifier/range_filter*.go`, the `range` command) limits detections to species plausible for the configured location. It applies only when a location is configured and a participating model is in use; Bat and BSG never participate. It is refreshed daily by `UpdateRangeFilterAction` and reloaded on settings or model changes.
 
-**Species identity.** `internal/speciesindex` is the single owner of the process-wide species name lookup. `internal/openfauna` supplies embedded multilingual names and taxonomy, `internal/labels` the non-bird and vocalization label sets, and `internal/ebird` taxonomy and observation data.
+**Species identity.** `internal/speciesindex` is the single owner of the process-wide species name lookup. `internal/openfauna` supplies embedded multilingual names and taxonomy, `internal/labels` the sound-event and vocalization label sets, and `internal/ebird` taxonomy and observation data.
 
 **Voice activity detection.** An optional Silero VAD (`internal/inference/vad`, needs ONNX Runtime, off by default) acts as a second source of "speech present" for the privacy filter described below.
 
@@ -177,9 +179,9 @@ Regional BirdNET v2.4 variants and geographic range models exist in the catalog.
 
 Note that `internal/privacy` is unrelated to the voice filter: it scrubs telemetry and logs (URL anonymization, RTSP sanitizing, system id).
 
-**Actions** (`processor/actions_*.go`): log, database save, clip export, BirdWeather upload, MQTT publish, SSE broadcast, range filter update, external command, and `CompositeAction`, which runs several actions in sequence with a per-step timeout. When the database is enabled, the save and the SSE broadcast run in one composite so that SSE sees the database id assigned by the save. A step in between enqueues the MQTT publish as its own job after the save, so the payload carries the database id and the MQTT retry settings apply; the composite itself is never retried, since a retry would save the detection twice. Without a database, SSE and MQTT are queued as independent actions.
+**Actions** (`processor/actions_*.go`): log, database save, clip export, BirdWeather upload, MQTT publish, SSE broadcast, range filter update, external command, and `CompositeAction`, which runs several actions in sequence with a per-step timeout. When the database is enabled, the save and the SSE broadcast run in one composite so that SSE sees the database id assigned by the save. A step in between enqueues the MQTT publish as its own job after the save, so the payload carries the database id and the MQTT retry settings apply; the composite is retried (for about five minutes) only while the save has provably stored nothing, such as an unreachable database, and MQTT and SSE then run once after the save that lands. A save that finishes only after the last attempt has ended keeps its row, but MQTT and SSE do not run for it. A failure whose commit outcome is unknown is not retried, since a retry could save the detection twice. Without a database, SSE and MQTT are queued as independent actions.
 
-**Job queue** (`internal/analysis/jobqueue`). Actions run asynchronously off the audio path in a bounded queue with per-job state, optional retry with exponential backoff, and per-action statistics. Retry configuration is chosen in the processor's job queue adapter and currently applies to BirdWeather uploads, the MQTT publish job, and deferred clip saves under extended capture. A retry configuration with `Enabled` false means a single attempt. A job never has two attempts running at once: an attempt that overruns its timeout is waited for before the next one starts. See [`internal/analysis/jobqueue/README.md`](internal/analysis/jobqueue/README.md).
+**Job queue** (`internal/analysis/jobqueue`). Actions run asynchronously off the audio path in a bounded queue with per-job state, optional retry with exponential backoff, and per-action statistics. Retry configuration is chosen in the processor's job queue adapter and currently applies to BirdWeather uploads, the MQTT publish job, deferred clip saves under extended capture, and the database save composite. A retry configuration may carry a `Retryable` check that ends the job early for an error that must not be repeated. A retry configuration with `Enabled` false means a single attempt. A job never has two attempts running at once: an attempt that overruns its timeout is waited for before the next one starts. See [`internal/analysis/jobqueue/README.md`](internal/analysis/jobqueue/README.md).
 
 **Event bus** (`internal/events`). After a database save, the detection is published as an event. Consumers include the notification service (new species and detection notifications), the alerting bridge (rules on detection events) and the telemetry worker. Errors flow through the same bus: `internal/errors` builds structured errors, which reach notifications and telemetry asynchronously without blocking the caller.
 
@@ -194,7 +196,7 @@ The datastore is in the middle of a long migration. Read [`internal/datastore/AG
 - **v2 schema** is the present and the future. Entities are in `datastore/v2/entities` (detections with predictions, model contributions, reviews, comments and locks; labels and taxonomic classes; AI models; audio sources; weather; dynamic thresholds; alert rules and history; notification history; app events and metadata; migration state). Persistence goes through repositories: `datastore.DetectionRepository` and the rest in `datastore/v2/repository`.
 - **Legacy schema** (the `notes` table, the `Note` model, `DataStore`, `SQLiteStore`, `MySQLStore` and the large `datastore.Interface`) is frozen and will be removed. `datastore/v2only` adapts a v2 database to the old `Interface` so existing callers keep working until they move to repositories.
 - **Startup decides the mode** (`datastore/v2/startup.go`): a fresh install starts directly in v2-only mode. An existing legacy database stays in legacy mode until the user starts a migration through the API. Migration runs as a state machine (initializing, dual write, migrating, validating, cutover, completed) in `datastore/v2/migration` and `state_manager.go`; afterwards data lives in `birdnet_v2.db` and may later be consolidated to the configured path.
-- **Engines.** SQLite (default, single open connection) and MySQL or MariaDB (pooled), for both schemas.
+- **Engines.** SQLite (default, single open connection) and MySQL or MariaDB (pooled), for both schemas. Only the MySQL and MariaDB LTS releases BirdNET-Go is tested with are supported (MySQL 8.4 and 9.7; MariaDB 10.11, 11.4, 11.8, 12.3); the list and the policy are in `internal/datastore/AGENTS.md`.
 - **Mocks.** `datastore.Interface` and other interfaces are mocked with mockery (`.mockery.yaml`, `go generate ./internal/datastore`). Never edit generated mocks by hand.
 
 Related storage: `internal/diskmanager` enforces clip retention (age, usage and drain policies) and reconciles clips with the database; `internal/backup` provides scheduled, optionally encrypted backups to local, FTP, SFTP, rsync or Google Drive targets.

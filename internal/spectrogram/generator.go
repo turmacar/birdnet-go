@@ -46,36 +46,73 @@ type generateOptions struct {
 	// is compared and the PNG published. It is a seam for tests that change the
 	// file in that window.
 	beforePublish func()
+	// settings, when set, is the settings snapshot the render reads instead of the
+	// current one, so a caller that derived a cache key from it gets bytes that
+	// match the key.
+	settings *conf.Settings
+}
+
+// settingsOr returns the snapshot set by WithSettings, or current() when none was.
+func (o *generateOptions) settingsOr(current func() *conf.Settings) *conf.Settings {
+	if o.settings != nil {
+		return o.settings
+	}
+	return current()
 }
 
 // ErrSourceChanged marks a render whose audio file differs from the state the
 // caller supplied with WithSourceState: the clip was still being written or was
 // replaced, so the image would not match the file as it stands. Nothing is
-// published; a later request decides from the current bytes.
+// published; a later request decides from the current bytes. StatSource also
+// returns it, wrapped, for a file whose identity could not be read.
 var ErrSourceChanged = errors.NewStd("audio file changed during spectrogram generation")
 
 // SourceState is an audio file as the caller's readiness check judged it ready
 // to render: its identity, size and modification time, plus the upper bound of
 // the memory its decode needs.
 type SourceState struct {
-	info         os.FileInfo
+	info os.FileInfo
+	// pinned reports that the file's identity was read when the state was
+	// created. A state whose identity could not be read never matches: on Windows
+	// a later read would take the identity of whatever file is at the path then.
+	pinned       bool
 	decodedBytes int64
+}
+
+// StatSource stats the audio file at path and reads its identity straight away.
+// On Windows os.Stat of a regular file defers the file id to the first
+// os.SameFile call, which reads it from the path at that moment (loadFileId in
+// Go's os/types_windows.go), so a state built from a plain os.Stat can take the
+// id of a file renamed over the path later. A file whose identity cannot be read
+// is returned as an error wrapping ErrSourceChanged.
+func StatSource(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(info, info) {
+		return nil, fmt.Errorf("%w: identity of %s could not be read", ErrSourceChanged, filepath.Base(path))
+	}
+	return info, nil
 }
 
 // NewSourceState captures info, the os.FileInfo of the audio file at the moment
 // it was judged ready, and decodedBytes, the most bytes its decode can hold
 // (transcode.ProbeInfo.DecodedBytes), which sizes the render's memory budget.
+// Obtain info from StatSource: it reads the identity at stat time, which
+// NewSourceState cannot do after the fact.
 func NewSourceState(info os.FileInfo, decodedBytes int64) SourceState {
-	return SourceState{info: info, decodedBytes: decodedBytes}
+	return SourceState{info: info, pinned: info != nil && os.SameFile(info, info), decodedBytes: decodedBytes}
 }
 
 // DecodedBytes returns the decoded-size bound the state was created with.
 func (s SourceState) DecodedBytes() int64 { return s.decodedBytes }
 
 // Matches reports whether now describes the same file content as the snapshot:
-// the same file (os.SameFile), size and modification time.
+// the same file (os.SameFile), size and modification time. A state whose
+// identity could not be read when it was created matches nothing.
 func (s SourceState) Matches(now os.FileInfo) bool {
-	return now != nil && os.SameFile(s.info, now) && s.info.Size() == now.Size() && s.info.ModTime().Equal(now.ModTime())
+	return s.pinned && now != nil && os.SameFile(s.info, now) && s.info.Size() == now.Size() && s.info.ModTime().Equal(now.ModTime())
 }
 
 // WithSourceState makes GenerateFromFile compare the audio file with state before
@@ -93,6 +130,17 @@ func WithSourceState(state SourceState) GenerateOption {
 func WithFrequencyProfile(fp FrequencyProfile) GenerateOption {
 	return func(o *generateOptions) {
 		o.freqProfile = &fp
+	}
+}
+
+// WithSettings makes the render read Style, DynamicRange and every other setting
+// from settings rather than from the snapshot current when it starts. A caller
+// that keys a cached image on those settings passes the snapshot it built the key
+// from, so a settings change during the render cannot store bytes under a key
+// they do not match.
+func WithSettings(settings *conf.Settings) GenerateOption {
+	return func(o *generateOptions) {
+		o.settings = settings
 	}
 }
 
@@ -173,6 +221,8 @@ func (g *Generator) getDynamicRange(settings *conf.Settings) string {
 //
 // The audioPath and outputPath must be absolute paths.
 // Width is in pixels, raw controls whether to show axes/legends.
+// Settings are read from one snapshot: the one WithSettings passes, otherwise
+// the current settings when the render starts.
 //
 // Context Timeout Behavior:
 // This function enforces a 90-second timeout for spectrogram generation regardless
@@ -264,7 +314,7 @@ func (g *Generator) GenerateFromFile(ctx context.Context, audioPath, outputPath 
 	// Capture one settings snapshot for the whole generation so
 	// Style, DynamicRange, etc. all read from the same view. A UI edit that
 	// lands mid-generation cannot split the output across two snapshots.
-	settings := g.currentSettings()
+	settings := options.settingsOr(g.currentSettings)
 
 	// Create context with timeout (see function documentation for timeout layering behavior)
 	renderCtx, renderCancel := context.WithTimeout(ctx, defaultGenerationTimeout)
@@ -334,6 +384,8 @@ func checkSourceUnchanged(ctx context.Context, source *SourceState, audioPath st
 // PCM format: s16le, mono. sampleRate is the source capture rate in Hz;
 // pass 0 to fall back to conf.SampleRate (48000 Hz).
 // The image is drawn in Go, with no external binary.
+// Settings are read from one snapshot: the one WithSettings passes, otherwise
+// the current settings when the render starts.
 //
 // Context Timeout Behavior:
 // This function enforces a 90-second timeout for spectrogram generation.
@@ -412,7 +464,7 @@ func (g *Generator) GenerateFromPCM(ctx context.Context, pcmData []byte, outputP
 	// Capture one settings snapshot for the whole generation so all reads
 	// (Style, DynamicRange, Export.Length) are consistent even if
 	// the user saves settings mid-render.
-	settings := g.currentSettings()
+	settings := options.settingsOr(g.currentSettings)
 
 	// Create context with timeout (see function documentation for timeout layering behavior)
 	ctx, cancel := context.WithTimeout(ctx, defaultGenerationTimeout)

@@ -10,6 +10,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/entities"
 	"github.com/tphakala/birdnet-go/internal/errors"
+	"github.com/tphakala/birdnet-go/internal/wallclock"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -121,42 +122,6 @@ func (r *detectionRepository) sourcesTable() string {
 	return tableAudioSources
 }
 
-// dateFromUnixExpr returns a SQL expression for the wall-clock calendar date (YYYY-MM-DD) of a
-// Unix timestamp in the configured timezone. offsetSeconds is that zone's UTC offset; it is added
-// to the epoch before the date is taken, so the result is independent of the database session /
-// OS-local timezone (unlike the older 'localtime' / FROM_UNIXTIME form). This mirrors
-// hourFromUnixExpr. detected_at is always positive, so the integer division stays non-negative
-// even for west-of-UTC (negative) offsets.
-//
-// The MySQL form computes the civil date arithmetically (DATE_ADD on a literal date with an
-// integer day count) so it does not depend on the session time_zone; DATE(FROM_UNIXTIME(...))
-// would apply that zone on top of the offset and double-count. Integer DIV avoids floating-point
-// rounding at exact day boundaries.
-//
-// SQLite: date(column + offset, 'unixepoch')
-// MySQL:  DATE_ADD('1970-01-01', INTERVAL (column + offset) DIV 86400 DAY)
-func (r *detectionRepository) dateFromUnixExpr(column string, offsetSeconds int) string {
-	if r.isMySQL {
-		return fmt.Sprintf("DATE_ADD('1970-01-01', INTERVAL (%s + %d) DIV 86400 DAY)", column, offsetSeconds)
-	}
-	return fmt.Sprintf("date(%s + %d, 'unixepoch')", column, offsetSeconds)
-}
-
-// hourFromUnixExpr returns a SQL expression that extracts the wall-clock HOUR (0-23) of a
-// Unix timestamp in the configured timezone. offsetSeconds is that zone's UTC offset; it is
-// added to the epoch before bucketing, so the result is independent of the database/OS-local
-// timezone (unlike the older 'localtime'/FROM_UNIXTIME form). This mirrors wallClockHourExpr, the
-// IncludedHours search-filter expression, with a single offset. detected_at is always positive,
-// so the integer division and modulo stay non-negative even for negative (west-of-UTC) offsets.
-// SQLite: CAST((column + offset) / 3600 AS INTEGER) % 24
-// MySQL:  FLOOR((column + offset) / 3600) % 24
-func (r *detectionRepository) hourFromUnixExpr(column string, offsetSeconds int) string {
-	if r.isMySQL {
-		return fmt.Sprintf("FLOOR((%s + %d) / 3600) %% 24", column, offsetSeconds)
-	}
-	return fmt.Sprintf("CAST((%s + %d) / 3600 AS INTEGER) %% 24", column, offsetSeconds)
-}
-
 // ============================================================================
 // CRUD Operations
 // ============================================================================
@@ -189,7 +154,8 @@ func (r *detectionRepository) Get(ctx context.Context, id uint) (*entities.Detec
 	return &det, nil
 }
 
-// GetWithRelations retrieves a detection with preloaded Label, Model, and Source.
+// GetWithRelations retrieves a detection with preloaded Label, Model, and Source, and
+// the original Label when a reviewer changed the species.
 // Note: Due to v2_ prefix concerns, we manually join rather than using Preload.
 func (r *detectionRepository) GetWithRelations(ctx context.Context, id uint) (*entities.Detection, error) {
 	var det entities.Detection
@@ -209,6 +175,19 @@ func (r *detectionRepository) GetWithRelations(ctx context.Context, id uint) (*e
 		}
 	} else {
 		det.Label = &label
+	}
+
+	// The model's original pick, only for a detection whose species was changed.
+	// A missing row is not an error.
+	if det.OriginalLabelID != nil {
+		var original entities.Label
+		if err := r.db.WithContext(ctx).Table(r.labelsTable()).First(&original, *det.OriginalLabelID).Error; err != nil {
+			if !errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("failed to load original label: %w", err)
+			}
+		} else {
+			det.OriginalLabel = &original
+		}
 	}
 
 	var model entities.AIModel
@@ -272,8 +251,7 @@ func (r *detectionRepository) Update(ctx context.Context, id uint, updates map[s
 		// Use WHERE NOT EXISTS to combine lock check with update
 		result := r.db.WithContext(ctx).Table(r.tableName()).
 			Where("id = ?", id).
-			Where(fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s WHERE %s.detection_id = ?)",
-				r.locksTable(), r.locksTable()), id).
+			Where(r.notLockedCondition(), id).
 			Updates(updates)
 		if result.Error != nil {
 			return result.Error
@@ -298,6 +276,13 @@ func (r *detectionRepository) Update(ctx context.Context, id uint, updates map[s
 	return nil
 }
 
+// notLockedCondition is the WHERE condition that holds for a detection without a
+// lock row. Its one argument is the detection ID.
+func (r *detectionRepository) notLockedCondition() string {
+	return fmt.Sprintf("NOT EXISTS (SELECT 1 FROM %s WHERE %s.detection_id = ?)",
+		r.locksTable(), r.locksTable())
+}
+
 // columnClipSampleRate is the detections column holding the clip's sample rate (Hz).
 const columnClipSampleRate = "clip_sample_rate"
 
@@ -311,6 +296,22 @@ func (r *detectionRepository) RecordClipSampleRate(ctx context.Context, id uint,
 	}
 	return datastore.RetryOnLock(ctx, "v2_record_clip_sample_rate", func() error {
 		return r.clipRows(ctx, id, clipName).Update(columnClipSampleRate, rate).Error
+	}, r.metrics)
+}
+
+// columnClipDenoised is the detections column recording whether the clip was denoised on export.
+const columnClipDenoised = "clip_denoised"
+
+// RecordClipDenoised sets the denoise marker of a detection whose clip_name still
+// equals clipName, overwriting any stored value. Like RecordClipSampleRate it is a
+// single guarded UPDATE, so a clip replaced or removed in the meantime is never
+// marked, and it does not check detection locks: the marker is clip metadata.
+func (r *detectionRepository) RecordClipDenoised(ctx context.Context, id uint, clipName string, denoised bool) error {
+	if clipName == "" {
+		return nil
+	}
+	return datastore.RetryOnLock(ctx, "v2_record_clip_denoised", func() error {
+		return r.clipRows(ctx, id, clipName).Update(columnClipDenoised, denoised).Error
 	}, r.metrics)
 }
 
@@ -483,7 +484,8 @@ func (r *detectionRepository) GetRecent(ctx context.Context, limit int) ([]*enti
 	return dets, nil
 }
 
-// loadRelationsForDetections loads Label, Model, Source for multiple detections.
+// loadRelationsForDetections loads Label (and the original Label of a detection whose
+// species was changed), Model, Source for multiple detections.
 // Returns error if any relation lookup fails.
 func (r *detectionRepository) loadRelationsForDetections(ctx context.Context, dets []*entities.Detection) error {
 	if len(dets) == 0 {
@@ -496,6 +498,9 @@ func (r *detectionRepository) loadRelationsForDetections(ctx context.Context, de
 	sourceIDs := make(map[uint]bool)
 	for _, d := range dets {
 		labelIDs[d.LabelID] = true
+		if d.OriginalLabelID != nil {
+			labelIDs[*d.OriginalLabelID] = true
+		}
 		modelIDs[d.ModelID] = true
 		if d.SourceID != nil {
 			sourceIDs[*d.SourceID] = true
@@ -560,6 +565,9 @@ func (r *detectionRepository) loadRelationsForDetections(ctx context.Context, de
 	// Assign relations
 	for _, d := range dets {
 		d.Label = labels[d.LabelID]
+		if d.OriginalLabelID != nil {
+			d.OriginalLabel = labels[*d.OriginalLabelID]
+		}
 		d.Model = models[d.ModelID]
 		if d.SourceID != nil {
 			d.Source = sources[*d.SourceID]
@@ -602,47 +610,6 @@ func (r *detectionRepository) GetByModel(ctx context.Context, modelID uint, limi
 	query := r.db.WithContext(ctx).Table(r.tableName()).Where("model_id = ?", modelID)
 
 	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	err := query.Order("detected_at DESC").Limit(limit).Offset(offset).Find(&dets).Error
-	return dets, total, err
-}
-
-// GetByDateRange retrieves detections within a Unix timestamp range.
-func (r *detectionRepository) GetByDateRange(ctx context.Context, start, end int64, limit, offset int) ([]*entities.Detection, int64, error) {
-	var dets []*entities.Detection
-	var total int64
-
-	query := r.db.WithContext(ctx).Table(r.tableName()).
-		Where("detected_at >= ? AND detected_at <= ?", start, end)
-
-	if err := query.Count(&total).Error; err != nil {
-		return nil, 0, err
-	}
-
-	err := query.Order("detected_at DESC").Limit(limit).Offset(offset).Find(&dets).Error
-	return dets, total, err
-}
-
-// GetByHour retrieves detections in the half-open interval [hourStart, hourStart+3600).
-// The exclusive upper bound prevents the first second of the next hour from being
-// counted in both adjacent hours.
-func (r *detectionRepository) GetByHour(ctx context.Context, hourStart int64, limit, offset int) ([]*entities.Detection, int64, error) {
-	return r.listByHalfOpenRange(ctx, hourStart, hourStart+3600, limit, offset)
-}
-
-// listByHalfOpenRange retrieves detections in [start, end) and returns the total count.
-func (r *detectionRepository) listByHalfOpenRange(ctx context.Context, start, end int64, limit, offset int) ([]*entities.Detection, int64, error) {
-	var dets []*entities.Detection
-	var total int64
-
-	query := r.db.WithContext(ctx).Table(r.tableName()).
-		Where("detected_at >= ? AND detected_at < ?", start, end)
-
-	// Count on a cloned session so the Count finisher does not mutate the query that is
-	// reused for the paginated Find below (mirrors the Search method's pattern).
-	if err := query.Session(&gorm.Session{}).Count(&total).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -798,6 +765,12 @@ func (r *detectionRepository) applySearchOrdering(query *gorm.DB, filters *Searc
 		query = query.Order("detected_at" + dir)
 	}
 
+	// Tiebreak on the primary key so rows with equal sort keys keep one order across
+	// offset pages. Qualified because the joined labels and reviews tables have an id too.
+	if filters.SortBy != SortFieldID {
+		query = query.Order(r.tableName() + ".id" + dir)
+	}
+
 	// Pagination
 	if filters.Limit > 0 {
 		query = query.Limit(filters.Limit)
@@ -888,31 +861,6 @@ func (r *detectionRepository) CountByModel(ctx context.Context, modelID uint) (i
 	return count, err
 }
 
-// CountByDateRange returns the count of detections in a Unix timestamp range.
-func (r *detectionRepository) CountByDateRange(ctx context.Context, start, end int64) (int64, error) {
-	var count int64
-	err := r.db.WithContext(ctx).Table(r.tableName()).
-		Where("detected_at >= ? AND detected_at <= ?", start, end).
-		Count(&count).Error
-	return count, err
-}
-
-// CountByHour returns the count of detections in the half-open interval
-// [hourStart, hourStart+3600). The exclusive upper bound prevents the first
-// second of the next hour from being counted in both adjacent hours.
-func (r *detectionRepository) CountByHour(ctx context.Context, hourStart int64) (int64, error) {
-	return r.countByHalfOpenRange(ctx, hourStart, hourStart+3600)
-}
-
-// countByHalfOpenRange counts detections in [start, end).
-func (r *detectionRepository) countByHalfOpenRange(ctx context.Context, start, end int64) (int64, error) {
-	var count int64
-	err := r.db.WithContext(ctx).Table(r.tableName()).
-		Where("detected_at >= ? AND detected_at < ?", start, end).
-		Count(&count).Error
-	return count, err
-}
-
 // ============================================================================
 // Aggregations
 // ============================================================================
@@ -974,11 +922,12 @@ func (r *detectionRepository) GetTopSpecies(ctx context.Context, start, end int6
 // given label IDs. It groups by (label_id, hour) so a single query (per chunk) covers many
 // labels at once; callers that map one species to multiple model label IDs sum the per-label
 // arrays themselves. False positives are excluded and minConfidence filters by confidence.
+// Rows in [seg.Start, seg.End) bucket by wall-clock hour at seg.OffsetSeconds.
 //
 // Large label sets are chunked by batchQuerySize to stay within SQL host-parameter limits;
 // per-chunk results are merged before returning. Each label ID appears in exactly one chunk,
 // so no cross-chunk aggregation is needed.
-func (r *detectionRepository) GetBatchHourlyOccurrences(ctx context.Context, labelIDs []uint, start, end int64, tzOffsetSeconds int, minConfidence float64) (map[uint][24]int, error) {
+func (r *detectionRepository) GetBatchHourlyOccurrences(ctx context.Context, labelIDs []uint, seg wallclock.Segment, minConfidence float64) (map[uint][24]int, error) {
 	result := make(map[uint][24]int, len(labelIDs))
 
 	// Return empty map for empty input (no query)
@@ -993,7 +942,7 @@ func (r *detectionRepository) GetBatchHourlyOccurrences(ctx context.Context, lab
 	}
 
 	// Bucket by wall-clock hour in the configured timezone (offset-adjusted); exclude false positives.
-	hourExpr := r.hourFromUnixExpr("d.detected_at", tzOffsetSeconds)
+	hourExpr := wallClockHourSQL("d.detected_at", segmentOffsetSQL(seg), r.isMySQL)
 	detTable := r.tableName()
 	revTable := r.reviewsTable()
 
@@ -1010,7 +959,7 @@ func (r *detectionRepository) GetBatchHourlyOccurrences(ctx context.Context, lab
 		err := r.db.WithContext(ctx).Table(fmt.Sprintf("%s d", detTable)).
 			Joins(fmt.Sprintf("LEFT JOIN %s dr ON d.id = dr.detection_id", revTable)).
 			Select(fmt.Sprintf("d.label_id as label_id, %s as hour, COUNT(*) as count", hourExpr)).
-			Where("d.label_id IN ? AND d.detected_at >= ? AND d.detected_at < ? AND d.confidence >= ?", chunk, start, end, minConfidence).
+			Where("d.label_id IN ? AND d.detected_at >= ? AND d.detected_at < ? AND d.confidence >= ?", chunk, seg.Start, seg.End, minConfidence).
 			Where("(dr.verified IS NULL OR dr.verified != ?)", string(entities.VerificationFalsePositive)).
 			Group(fmt.Sprintf("d.label_id, %s", hourExpr)).
 			Scan(&rows).Error
@@ -1019,7 +968,7 @@ func (r *detectionRepository) GetBatchHourlyOccurrences(ctx context.Context, lab
 		}
 
 		for _, row := range rows {
-			if row.Hour >= 0 && row.Hour < 24 {
+			if row.Hour >= 0 && row.Hour < wallClockHoursPerDay {
 				counts := result[row.LabelID]
 				counts[row.Hour] = row.Count
 				result[row.LabelID] = counts
@@ -1078,22 +1027,6 @@ func (r *detectionRepository) GetBatchConfidences(ctx context.Context, labelIDs 
 	}
 
 	return result, nil
-}
-
-// GetDailyOccurrences returns daily detection counts for a label.
-func (r *detectionRepository) GetDailyOccurrences(ctx context.Context, labelID uint, start, end int64, tzOffsetSeconds int) ([]DailyCount, error) {
-	var results []DailyCount
-
-	// Group by wall-clock date in the configured timezone (offset-adjusted).
-	dateExpr := r.dateFromUnixExpr("detected_at", tzOffsetSeconds)
-	err := r.db.WithContext(ctx).Table(r.tableName()).
-		Select(fmt.Sprintf("%s as date, COUNT(*) as count", dateExpr)).
-		Where("label_id = ? AND detected_at >= ? AND detected_at <= ?", labelID, start, end).
-		Group("date").
-		Order("date ASC").
-		Scan(&results).Error
-
-	return results, err
 }
 
 // GetSpeciesFirstDetection returns the first-ever detection of a species.
@@ -1371,24 +1304,27 @@ func (r *detectionRepository) GetModelContributionsByDetectionIDs(ctx context.Co
 }
 
 // SavePredictionsBatch stores predictions for multiple detections efficiently.
-// Uses ON CONFLICT DO NOTHING for idempotent migration support.
+// Rows that repeat a stored or earlier (detection, label) pair are skipped on
+// every dialect, which keeps migration reruns idempotent.
 func (r *detectionRepository) SavePredictionsBatch(ctx context.Context, preds []*entities.DetectionPrediction) error {
 	if len(preds) == 0 {
 		return nil
 	}
 	return datastore.RetryOnLock(ctx, "v2_save_predictions_batch", func() error {
 		return r.db.WithContext(ctx).Table(r.predictionsTable()).
-			Clauses(clause.OnConflict{DoNothing: true}).
+			Clauses(onConflictSkip(r.isMySQL, detectionIDColumn)).
 			CreateInBatches(preds, defaultDBBatchSize).Error
 	}, r.metrics)
 }
 
-// GetPredictions retrieves all predictions for a detection.
+// GetPredictions retrieves all predictions for a detection, best rank first.
+// rank is a reserved word on MySQL, so the ORDER BY column goes through the
+// dialect's identifier quoting.
 func (r *detectionRepository) GetPredictions(ctx context.Context, detectionID uint) ([]*entities.DetectionPrediction, error) {
 	var preds []*entities.DetectionPrediction
 	err := r.db.WithContext(ctx).Table(r.predictionsTable()).
 		Where("detection_id = ?", detectionID).
-		Order("rank ASC").
+		Order(clause.OrderByColumn{Column: clause.Column{Name: "rank"}}).
 		Find(&preds).Error
 	return preds, err
 }
@@ -1411,18 +1347,23 @@ func (r *detectionRepository) DeletePredictions(ctx context.Context, detectionID
 // Idempotent: re-saving updates the verified status and timestamp.
 func (r *detectionRepository) SaveReview(ctx context.Context, review *entities.DetectionReview) error {
 	return datastore.RetryOnLock(ctx, "v2_save_review", func() error {
-		now := time.Now()
-		review.UpdatedAt = now
-		return r.db.WithContext(ctx).Table(r.reviewsTable()).
-			Clauses(clause.OnConflict{
-				Columns: []clause.Column{{Name: "detection_id"}},
-				DoUpdates: clause.Assignments(map[string]any{
-					"verified":   string(review.Verified),
-					"updated_at": now,
-				}),
-			}).
-			Create(review).Error
+		return r.upsertReview(r.db.WithContext(ctx), review)
 	}, r.metrics)
+}
+
+// upsertReview creates or updates a review on db, which may be a transaction.
+func (r *detectionRepository) upsertReview(db *gorm.DB, review *entities.DetectionReview) error {
+	now := time.Now()
+	review.UpdatedAt = now
+	return db.Table(r.reviewsTable()).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "detection_id"}},
+			DoUpdates: clause.Assignments(map[string]any{
+				"verified":   string(review.Verified),
+				"updated_at": now,
+			}),
+		}).
+		Create(review).Error
 }
 
 // GetReview retrieves the review for a detection.
@@ -1491,7 +1432,7 @@ func (r *detectionRepository) SaveReviewsBatch(ctx context.Context, reviews []*e
 	}
 	return datastore.RetryOnLock(ctx, "v2_save_reviews_batch", func() error {
 		return r.db.WithContext(ctx).Table(r.reviewsTable()).
-			Clauses(clause.OnConflict{DoNothing: true}).
+			Clauses(onConflictSkip(r.isMySQL, detectionIDColumn)).
 			CreateInBatches(reviews, defaultDBBatchSize).Error
 	}, r.metrics)
 }
@@ -1590,13 +1531,15 @@ func (r *detectionRepository) DeleteComment(ctx context.Context, commentID uint)
 }
 
 // SaveCommentsBatch saves multiple comments efficiently.
+// Comments repeating a stored LegacyID are skipped (unique index plus
+// onConflictSkip), which keeps repeated migration copies idempotent.
 func (r *detectionRepository) SaveCommentsBatch(ctx context.Context, comments []*entities.DetectionComment) error {
 	if len(comments) == 0 {
 		return nil
 	}
 	return datastore.RetryOnLock(ctx, "v2_save_comments_batch", func() error {
 		return r.db.WithContext(ctx).Table(r.commentsTable()).
-			Clauses(clause.OnConflict{DoNothing: true}).
+			Clauses(onConflictSkip(r.isMySQL, detectionIDColumn)).
 			CreateInBatches(comments, defaultDBBatchSize).Error
 	}, r.metrics)
 }
@@ -1633,19 +1576,39 @@ func (r *detectionRepository) GetCommentsByDetectionIDs(ctx context.Context, det
 // Locks
 // ============================================================================
 
+// mysqlShareLockClause makes the SELECT of the lock insert a locking read on
+// MySQL and MariaDB. Without it, MariaDB with innodb_snapshot_isolation on
+// (its default in 11.8 and 12.3) fails the loser of two concurrent locks at
+// READ COMMITTED with Error 1020 instead of letting it skip the duplicate.
+// MariaDB 10.11 does not accept the FOR SHARE spelling.
+const mysqlShareLockClause = "LOCK IN SHARE MODE "
+
 // Lock prevents modification/deletion of a detection.
-// Uses an atomic INSERT...SELECT...WHERE NOT EXISTS to avoid TOCTOU races.
-// Idempotent: locking an already-locked detection succeeds silently.
-// Returns ErrDetectionNotFound only if the detection does not exist.
+// One statement inserts the lock row only if the detection exists and skips the
+// insert when the row is already there (a repeated or concurrent lock), so the
+// first lock time is kept. Idempotent: locking an already-locked detection
+// succeeds silently. Returns ErrDetectionNotFound only if the detection does
+// not exist.
+//
+// The lock time is the application's clock, sent as a parameter. A server-side
+// CURRENT_TIMESTAMP is in the database server's zone on MySQL and MariaDB and reads
+// back as another instant when that zone differs from the process zone.
 func (r *detectionRepository) Lock(ctx context.Context, detectionID uint) error {
+	shareLock := ""
+	if r.isMySQL {
+		shareLock = mysqlShareLockClause
+	}
+	query := fmt.Sprintf("INSERT INTO %s (detection_id, locked_at) SELECT ?, ? FROM %s WHERE %s.id = ? %s%s",
+		r.locksTable(), r.tableName(), r.tableName(), shareLock, onConflictSkipSQL(r.isMySQL, detectionIDColumn))
 	return datastore.RetryOnLock(ctx, "v2_lock_detection", func() error {
-		result := r.db.WithContext(ctx).Exec(
-			fmt.Sprintf("INSERT INTO %s (detection_id, locked_at) SELECT ?, CURRENT_TIMESTAMP FROM %s WHERE %s.id = ? AND NOT EXISTS (SELECT 1 FROM %s WHERE %s.detection_id = ?)",
-				r.locksTable(), r.tableName(), r.tableName(), r.locksTable(), r.locksTable()),
-			detectionID, detectionID, detectionID)
+		now := time.Now()
+		result := r.db.WithContext(ctx).Exec(query, detectionID, now, detectionID)
 		if result.Error != nil {
 			return result.Error
 		}
+		// 0 rows means the detection is missing or, where the driver reports a
+		// skipped duplicate as 0 (SQLite, MySQL without clientFoundRows), that it
+		// is already locked; the Exists check tells them apart.
 		if result.RowsAffected == 0 {
 			exists, err := r.Exists(ctx, detectionID)
 			if err != nil {
@@ -1698,9 +1661,24 @@ func (r *detectionRepository) SaveLocksBatch(ctx context.Context, locks []*entit
 	}
 	return datastore.RetryOnLock(ctx, "v2_save_locks_batch", func() error {
 		return r.db.WithContext(ctx).Table(r.locksTable()).
-			Clauses(clause.OnConflict{DoNothing: true}).
+			Clauses(onConflictSkip(r.isMySQL, detectionIDColumn)).
 			CreateInBatches(locks, defaultDBBatchSize).Error
 	}, r.metrics)
+}
+
+// GetLockedDetectionIDsAfter returns the detection IDs of locked detections
+// greater than afterID in ascending order, at most limit of them.
+func (r *detectionRepository) GetLockedDetectionIDsAfter(ctx context.Context, afterID uint, limit int) ([]uint, error) {
+	var ids []uint
+	err := r.db.WithContext(ctx).Table(r.locksTable()).
+		Where("detection_id > ?", afterID).
+		Order("detection_id ASC").
+		Limit(limit).
+		Pluck("detection_id", &ids).Error
+	if err != nil {
+		return nil, fmt.Errorf("list locked detection ids: %w", err)
+	}
+	return ids, nil
 }
 
 // GetLocksByDetectionIDs retrieves lock status for multiple detections.
@@ -1792,13 +1770,13 @@ func (r *detectionRepository) buildAnalyticsBaseQuery(ctx context.Context, start
 }
 
 // GetHourlyDistribution returns detection counts by hour.
-func (r *detectionRepository) GetHourlyDistribution(ctx context.Context, start, end int64, tzOffsetSeconds int, labelIDs []uint, modelID *uint) ([]HourlyDistributionData, error) {
+func (r *detectionRepository) GetHourlyDistribution(ctx context.Context, seg wallclock.Segment, labelIDs []uint, modelID *uint) ([]HourlyDistributionData, error) {
 	var results []HourlyDistributionData
 
-	// Bucket by wall-clock hour in the configured timezone via hourFromUnixExpr.
+	// Bucket by wall-clock hour at the segment's offset via wallClockHourSQL.
 	// Exclude detections marked as false_positive
-	hourExpr := r.hourFromUnixExpr("d.detected_at", tzOffsetSeconds)
-	query := r.buildAnalyticsBaseQuery(ctx, start, end, labelIDs, modelID).
+	hourExpr := wallClockHourSQL("d.detected_at", segmentOffsetSQL(seg), r.isMySQL)
+	query := r.buildAnalyticsBaseQuery(ctx, seg.Start, seg.End, labelIDs, modelID).
 		Select(fmt.Sprintf("%s as hour, COUNT(*) as count", hourExpr)).
 		Group("hour").
 		Order("hour ASC")
@@ -1820,13 +1798,13 @@ func (r *detectionRepository) GetDetectionTimestamps(ctx context.Context, start,
 }
 
 // GetDailyAnalytics returns daily statistics.
-func (r *detectionRepository) GetDailyAnalytics(ctx context.Context, start, end int64, tzOffsetSeconds int, labelIDs []uint, modelID *uint) ([]DailyAnalyticsData, error) {
+func (r *detectionRepository) GetDailyAnalytics(ctx context.Context, seg wallclock.Segment, labelIDs []uint, modelID *uint) ([]DailyAnalyticsData, error) {
 	var results []DailyAnalyticsData
 
-	// Group by wall-clock date in the configured timezone (offset-adjusted).
+	// Group by wall-clock date at the segment's offset.
 	// Exclude detections marked as false_positive
-	dateExpr := r.dateFromUnixExpr("d.detected_at", tzOffsetSeconds)
-	query := r.buildAnalyticsBaseQuery(ctx, start, end, labelIDs, modelID).
+	dateExpr := wallClockDateSQL("d.detected_at", segmentOffsetSQL(seg), r.isMySQL)
+	query := r.buildAnalyticsBaseQuery(ctx, seg.Start, seg.End, labelIDs, modelID).
 		Select(fmt.Sprintf(`
 			%s as date,
 			COUNT(*) as total_detections,

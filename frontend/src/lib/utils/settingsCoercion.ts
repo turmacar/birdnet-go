@@ -36,7 +36,14 @@ import type {
   PrivacyFilterSettings,
   PrivacyFilterVadSettings,
 } from '$lib/stores/settings';
+import { DEFAULT_DENOISE_PRESET, isDenoisePresetId } from '$lib/utils/denoisePresets';
 import { AUDIO_GAIN_MIN_DB, AUDIO_GAIN_MAX_DB } from '$lib/stores/settings';
+import {
+  PLAYBACK_GAIN_MAX_DB,
+  PLAYBACK_GAIN_MIN_DB,
+  clampToRange,
+  highPassToStored,
+} from '$lib/utils/playbackDefaults';
 
 // Type for partial/unknown settings data
 type UnknownSettings = Record<string, unknown>;
@@ -335,6 +342,20 @@ export function coerceBirdNetSettings(settings: PartialBirdNetSettings): Partial
 }
 
 /**
+ * Complete a denoise setting (export-stage or playback default): a missing or
+ * malformed object becomes off at the default strength, and an unknown strength
+ * falls back to the default so the strength dropdown always has a valid value.
+ */
+function coerceDenoiseSettings(value: unknown): { enabled: boolean; strength: string } {
+  const denoise = isPlainObject(value) ? value : {};
+  return {
+    ...denoise,
+    enabled: coerceBoolean(denoise.enabled, false),
+    strength: isDenoisePresetId(denoise.strength) ? denoise.strength : DEFAULT_DENOISE_PRESET,
+  };
+}
+
+/**
  * Validate and coerce audio settings
  */
 export function coerceAudioSettings(settings: PartialAudioSettings): PartialAudioSettings {
@@ -427,6 +448,11 @@ export function coerceAudioSettings(settings: PartialAudioSettings): PartialAudi
 
       coercedExport.normalization = normalizationSettings;
     }
+
+    // Denoise: backfill the object for a response from an older server and keep
+    // both fields complete, so the strength dropdown always has a valid value
+    // and an Off state is a real value rather than a missing key.
+    coercedExport.denoise = coerceDenoiseSettings(exp.denoise);
 
     // Cast back to appropriate type for assignment
     coerced.export = coercedExport as unknown as typeof settings.export;
@@ -881,6 +907,28 @@ export function coerceSettings(section: string, data: UnknownSettings): UnknownS
         coercedRealtime.privacyFilter = coercePrivacyFilterSettings(
           data.privacyFilter as Partial<PrivacyFilterSettings> & UnknownSettings
         );
+      }
+
+      // Backfill the playback defaults for a response from an older server: the
+      // denoise object so an Off state is a real value and the strength is always
+      // a valid preset, and the high-pass object with the cutoff in the stored
+      // form (a cutoff at or below the floor is off, stored as 0), so the Settings form
+      // never reads a server-normalized value as a change. The gain is held to
+      // the default's range.
+      if (isPlainObject(data.dashboard)) {
+        const dashboard = data.dashboard;
+        const gain = dashboard.defaultAudioGain;
+        const playback = isPlainObject(dashboard.playback) ? dashboard.playback : {};
+        coercedRealtime.dashboard = {
+          ...dashboard,
+          ...(typeof gain === 'number' && Number.isFinite(gain)
+            ? {
+                defaultAudioGain: clampToRange(gain, PLAYBACK_GAIN_MIN_DB, PLAYBACK_GAIN_MAX_DB),
+              }
+            : {}),
+          playbackDenoise: coerceDenoiseSettings(dashboard.playbackDenoise),
+          playback: { ...playback, highPassHz: highPassToStored(playback.highPassHz) },
+        };
       }
 
       // Backfill extendedCapture defaults for legacy configs

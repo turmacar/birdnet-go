@@ -27,6 +27,7 @@ import (
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	"github.com/tphakala/birdnet-go/internal/detection"
 	"github.com/tphakala/birdnet-go/internal/imageprovider"
+	"github.com/tphakala/birdnet-go/internal/labels/soundevent"
 	"github.com/tphakala/birdnet-go/internal/logger"
 	"github.com/tphakala/birdnet-go/internal/mqtt"
 	"github.com/tphakala/birdnet-go/internal/notification"
@@ -78,13 +79,27 @@ type Processor struct {
 	Metrics                *observability.Metrics
 	DynamicThresholds      map[string]*DynamicThreshold
 	thresholdsMutex        sync.RWMutex        // Mutex to protect access to DynamicThresholds
-	pendingResets          map[string]struct{} // Species names pending reset, protected by thresholdsMutex
-	pendingResetAll        bool                // True if a full reset is pending, protected by thresholdsMutex
-	pendingDetections      map[string]PendingDetection
-	pendingMutex           sync.RWMutex // RWMutex to protect access to pendingDetections (RLock for snapshots)
-	dogDetectionMutex      sync.Mutex
-	detectionMutex         sync.RWMutex // Mutex to protect LastDogDetection and LastHumanDetection maps
-	vadGate                *vadGate     // Lazily-loaded Silero VAD speech gate for the privacy filter
+	pendingResets          map[string]struct{} // Species whose reset delete failed; retried at the start of the next persistence cycle, protected by thresholdsMutex
+	pendingResetAll        bool                // True if the delete-all of a full reset failed; retried at the start of the next persistence cycle, protected by thresholdsMutex
+
+	// thresholdResetBarrier is the reset whose database deletes are running, nil
+	// otherwise, protected by thresholdsMutex. At most one exists at a time because
+	// resets hold the persistence lock for their whole run.
+	thresholdResetBarrier *thresholdResetBarrier
+
+	// thresholdPersistSlot is a one-slot lock that serializes dynamic threshold
+	// persistence cycles and resets. Resets also rely on it to keep a cycle from
+	// writing a re-learned row before their row delete. It is created on first use
+	// through thresholdPersistOnce so zero-value Processors in tests work. Lock
+	// order: take it before thresholdsMutex, never while holding thresholdsMutex.
+	thresholdPersistOnce sync.Once
+	thresholdPersistSlot chan struct{}
+
+	pendingDetections map[string]PendingDetection
+	pendingMutex      sync.RWMutex // RWMutex to protect access to pendingDetections (RLock for snapshots)
+	dogDetectionMutex sync.Mutex
+	detectionMutex    sync.RWMutex // Mutex to protect LastDogDetection and LastHumanDetection maps
+	vadGate           *vadGate     // Lazily-loaded Silero VAD speech gate for the privacy filter
 	// privacyCoverage lists the audio spans each (source, model, detector) has
 	// scored for speech, guarded by detectionMutex. The privacy coverage gate
 	// defers a pending detection until its saved clip span is inside one of them.
@@ -101,6 +116,10 @@ type Processor struct {
 	// (humanHitMaxPerSource) dropped from humanHits. It is guarded by
 	// detectionMutex and created lazily.
 	humanHitsCapDropped map[string]time.Time
+	// clipMarks writes the clip denoise marker. It is set once before Start
+	// (SetClipDenoiseRecorder) and never written again, so it needs no lock; nil on
+	// the legacy store leaves the marker unwritten.
+	clipMarks clipDenoiseRecorder
 	// privacyRollup receives privacy filter activity for the hourly rollup. It is
 	// set once before Start (SetPrivacyRollup) and never written again, so it needs
 	// no lock; nil leaves every hit site a no-op.
@@ -115,6 +134,10 @@ type Processor struct {
 	preRenderer      PreRendererSubmit  // Spectrogram pre-renderer for background generation
 	preRendererOnce  sync.Once          // Ensures pre-renderer is initialized only once
 	startOnce        sync.Once          // Ensures Start() is called only once
+	// preRendererSFS is the SecureFS root initPreRenderer opened for the
+	// pre-renderer. The processor owns it: PreRenderer.Stop never closes an
+	// injected SecureFS, so stopPreRenderer closes it, once, via Swap.
+	preRendererSFS atomic.Pointer[securefs.SecureFS]
 	// SSE related fields
 	SSEBroadcaster      func(note *datastore.Note, birdImage *imageprovider.BirdImage) error // Function to broadcast detection via SSE
 	sseBroadcasterMutex sync.RWMutex                                                         // Mutex to protect SSE broadcaster access
@@ -162,6 +185,17 @@ type Processor struct {
 	// Set once during pipeline initialization (audio_pipeline_service.go) and never replaced;
 	// no synchronization needed for concurrent reads.
 	BufferMgr *buffer.Manager
+
+	// scoredRuns records, per audio source and model, the audio the model has
+	// scored without a gap, for the model consensus filter. Guarded by
+	// scoredRunsMu, a leaf lock: nothing else is acquired while it is held, and it
+	// is never held together with pendingMutex.
+	scoredRuns   map[scoredRunKey]scoredRun
+	scoredRunsMu sync.Mutex
+
+	// consensusModelsFn replaces the production model view of the consensus filter.
+	// It is a test hook and nil in production.
+	consensusModelsFn func() consensusModels
 
 	// Backup system fields (optional)
 	backupManager   any // Use interface{} to avoid import cycle
@@ -247,6 +281,29 @@ type Detections struct {
 	pcmData3s     []byte                       // 3s PCM data containing the detection
 	Result        detection.Result             // Detection result containing highest match
 	Results       []detection.AdditionalResult // Additional BirdNET prediction results
+}
+
+// taskDetectionFor returns the detection payload to queue with action. The
+// database save can sit in the queue for a whole retry window and reads nothing
+// from the payload, so it gets a copy without the PCM audio instead of pinning
+// it.
+func taskDetectionFor(det *Detections, action Action) Detections {
+	switch a := action.(type) {
+	case *DatabaseAction:
+	case *CompositeAction:
+		if len(a.Actions) == 0 || !isDatabaseAction(a.Actions[0]) {
+			return *det
+		}
+	default:
+		return *det
+	}
+	return Detections{CorrelationID: det.CorrelationID, Result: det.Result, Results: det.Results}
+}
+
+// isDatabaseAction reports whether action is a DatabaseAction.
+func isDatabaseAction(action Action) bool {
+	_, ok := action.(*DatabaseAction)
+	return ok
 }
 
 // ModelContribution tracks a single AI model's detection activity for a pending detection.
@@ -732,19 +789,11 @@ func (p *Processor) startDetectionProcessor() {
 // with new or higher-confidence instances and setting an appropriate flush deadline.
 // It also runs the VAD speech gate on the chunk and, once the chunk's speech hits
 // are written, publishes the audio the chunk's detectors scored as privacy
-// coverage.
+// coverage. Last, once the window's hits are merged, it records the audio the
+// window scored for the model consensus filter.
 //
 //nolint:gocritic // hugeParam: Pass by value is intentional - avoids pointer dereferencing in hot path
 func (p *Processor) processDetections(item classifier.Results) {
-	// Add structured logging for detection pipeline entry
-	GetLogger().Debug("Processing detections from queue",
-		logger.String("source", p.getDisplayNameForSource(item.Source.ID)),
-		logger.String("model_id", item.ModelID),
-		logger.Time("start_time", item.StartTime),
-		logger.Int("results_count", len(item.Results)),
-		logger.Int64("elapsed_time_ms", item.ElapsedTime.Milliseconds()),
-		logger.String("operation", "process_detections_entry"))
-
 	// Capture a settings snapshot once so every decision in this cycle
 	// uses a consistent, hot-reloadable view of the configuration.
 	settings := p.currentSettings()
@@ -792,7 +841,7 @@ func (p *Processor) processDetections(item classifier.Results) {
 			}
 		}
 		threshold := modelGlobalConfidenceThreshold(settings, item.ModelID)
-		p.pipelineStats.RecordInference(item.Source.ID, item.ModelID, len(item.Results), len(detectionResults), maxConf, threshold)
+		p.pipelineStats.RecordInference(item.Source.ID, item.ModelID, len(item.Results), len(detectionResults), maxConf, threshold, item.Inference)
 	}
 
 	// Every result of this chunk shares one window, so one hit stamp serves them all.
@@ -802,17 +851,81 @@ func (p *Processor) processDetections(item classifier.Results) {
 		p.mergePendingHit(&item, &detectionResults[i], hitAt, detectionWindow)
 	}
 
+	// Record the audio this window scored only after its hits are merged, so the
+	// consensus filter never sees a model as having scored audio whose hits are
+	// still in flight.
+	p.recordScoredRun(&item)
+
 	// Broadcast updated pending detections snapshot for "currently hearing" UI.
 	// This runs after all new detections are incorporated into pendingDetections.
 	snapshot := p.SnapshotVisiblePending()
 	p.broadcastPendingSnapshot(snapshot)
 }
 
+// unlikelyVerdict is the part of a detection result that records whether and why
+// validators tagged it unlikely: the tag, the validators that judged, and the
+// diagnostics of the CV filter.
+type unlikelyVerdict struct {
+	unlikely    bool
+	sources     detection.UnlikelySource
+	cv          float64
+	cvThreshold float64
+}
+
+// verdictOf reads the unlikely verdict of a result.
+func verdictOf(r *detection.Result) unlikelyVerdict {
+	return unlikelyVerdict{
+		unlikely:    r.Unlikely,
+		sources:     r.UnlikelySources,
+		cv:          r.UltrasonicCV,
+		cvThreshold: r.UltrasonicCVThreshold,
+	}
+}
+
+// mergeUnlikelyVerdict sets the unlikely verdict of a pending detection after a later
+// hit window was merged into it. merged is the pending result (already replaced by
+// the hit when that window won on confidence); prev is its verdict before the merge
+// and hit the verdict of the merged window. The detection stays unlikely only while
+// every hit window was tagged; one window that was not tagged clears the tag, the
+// source bits and the diagnostics. While it stays unlikely, the source bits are the
+// union of both sides, so a bit means that validator judged at least one hit window.
+//
+// The CV and its threshold are merged only between sides that carry the CV bit: when
+// only one side does, that side's values are kept untouched; when both do, the
+// highest CV wins with the threshold that judged it (the later one's on a tie);
+// when neither does, there is none. Apart from the threshold kept on a CV tie, the
+// merge does not depend on arrival order or on which window had the highest confidence.
+func mergeUnlikelyVerdict(merged *detection.Result, prev, hit unlikelyVerdict) {
+	merged.Unlikely = prev.unlikely && hit.unlikely
+	if !merged.Unlikely {
+		merged.UnlikelySources = 0
+		merged.UltrasonicCV = 0
+		merged.UltrasonicCVThreshold = 0
+		return
+	}
+	merged.UnlikelySources = prev.sources | hit.sources
+
+	prevCV := prev.sources.Has(detection.UnlikelySourceUltrasonicCV)
+	hitCV := hit.sources.Has(detection.UnlikelySourceUltrasonicCV)
+	switch {
+	case prevCV && hitCV && prev.cv > hit.cv, prevCV && !hitCV:
+		merged.UltrasonicCV = prev.cv
+		merged.UltrasonicCVThreshold = prev.cvThreshold
+	case hitCV:
+		merged.UltrasonicCV = hit.cv
+		merged.UltrasonicCVThreshold = hit.cvThreshold
+	default:
+		merged.UltrasonicCV = 0
+		merged.UltrasonicCVThreshold = 0
+	}
+}
+
 // mergePendingHit folds one detection of the chunk item into pendingDetections: it
 // updates the pending entry for the detection's source and species (which another
 // model may have created) or creates one, counts the hit, records it in the model's
 // contribution statistics stamped with hitAt, and applies extended capture when the
-// species qualifies. It takes and releases pendingMutex itself; the caller must not
+// species qualifies. On update it also merges the ultrasonic unlikely verdict of the hit
+// (see mergeUnlikelyVerdict). It takes and releases pendingMutex itself; the caller must not
 // hold it.
 func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, hitAt time.Time, detectionWindow time.Duration) {
 	commonName := strings.ToLower(det.Result.Species.CommonName)
@@ -828,6 +941,7 @@ func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, h
 	if existing, exists := p.pendingDetections[mapKey]; exists {
 		// Update the existing detection (may be from same or different model)
 		oldConfidence := existing.Confidence
+		previous := verdictOf(&existing.Detection.Result)
 		existing.LastUpdated = now
 		existing.AudioCapturedAt = item.AudioCapturedAt
 		if confidence > existing.Confidence {
@@ -843,6 +957,7 @@ func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, h
 				logger.Int("count", existing.Count+1),
 				logger.String("operation", "update_pending_detection"))
 		}
+		mergeUnlikelyVerdict(&existing.Detection.Result, previous, verdictOf(&det.Result))
 		existing.Count++
 
 		// Track per-model contribution
@@ -894,6 +1009,8 @@ func (p *Processor) mergePendingHit(item *classifier.Results, det *Detections, h
 }
 
 // processResults processes the results from the BirdNET prediction and returns a list of detections.
+// Every range-filter decision (the Last-heard feed, the primary gate and the
+// stored alternates) reads the settings snapshot passed in, not the processor's own settings.
 //
 //nolint:gocritic // hugeParam: Pass by value is intentional - avoids pointer dereferencing in hot path
 func (p *Processor) processResults(settings *conf.Settings, item classifier.Results) []Detections {
@@ -952,7 +1069,7 @@ func (p *Processor) processResults(settings *conf.Settings, item classifier.Resu
 		// species passes the range filter. This is independent of whether the
 		// detection is saved below (saved detections also clear this bar).
 		if result.Confidence > baseThreshold {
-			inRange := !shouldApplyRangeFilter(item.ModelID, settings) || settings.IsSpeciesIncluded(result.Species)
+			inRange := passesRangeFilter(item.ModelID, settings, result.Species)
 			p.updateLastDetection(item.ModelID, commonName, scientificName, float64(result.Confidence), feedTime, inRange, feedThrottle)
 		}
 
@@ -965,25 +1082,38 @@ func (p *Processor) processResults(settings *conf.Settings, item classifier.Resu
 		detections = append(detections, det)
 	}
 
-	// Run ultrasonic validation filter on bat detections. Computed once per chunk
-	// since all detections share the same source audio.
-	if len(detections) > 0 && item.ModelID == classifier.RegistryIDBat {
+	// Run ultrasonic validation filter on bat-group detections. Computed once per
+	// chunk since all detections share the same source audio.
+	if len(detections) > 0 && isBatGroupModel(item.ModelID) {
 		p.applyUltrasonicFilter(settings, item, detections)
 	}
 
 	return detections
 }
 
+// reasonUltrasonicFilter is the discard reason of the ultrasonic filter when
+// discardunlikely drops a detection still tagged unlikely. The text is fixed
+// because discard reasons are aggregated by their exact string (see
+// reasonModelConsensus).
+const reasonUltrasonicFilter = "ultrasonic filter"
+
 // bytesPerPCM16Sample is the size of one 16-bit PCM sample in bytes.
 const bytesPerPCM16Sample = 2
 
 // applyUltrasonicFilter runs the ultrasonic validation filter on a batch of bat detections.
-// It computes the US frame CV once from the shared PCM audio and tags all detections
-// as unlikely when the CV falls below the configured threshold. The PCM data is at
-// the source sample rate (e.g., 256kHz), not the model's internal 48kHz rate.
-// It does nothing when the filter is disabled, when the source rate leaves no
-// band above the split, when the STFT settings are invalid, or when the PCM
-// cannot be decoded (a half sample) or holds too few frames.
+// It computes the US frame CV once from the shared PCM audio, takes the share of
+// broadband events (clicks, rustling) out of it, and tags all detections as
+// unlikely when the resulting CV, which is the one reported, falls below the
+// configured threshold. The PCM data is the model's analysis window, at the
+// model's effective sample rate (Bat 256 kHz, BSG-BAT 384 kHz), whatever the source rate is: the source audio is resampled to
+// that rate for the model.
+// It does nothing when the filter is disabled, when the model is unknown (its
+// window rate cannot be known), when the model rate or the source rate leaves no
+// band above the split, when the STFT settings are invalid, or when the PCM cannot
+// be decoded (a half sample) or holds too few frames. Both rates gate the band:
+// resampling adds no content above the source's Nyquist, so a band the source
+// cannot carry holds only resampler residue, and an unknown source rate counts
+// as no band.
 //
 //nolint:gocritic // hugeParam: Pass by value is intentional for item
 func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifier.Results, detections []Detections) {
@@ -992,9 +1122,19 @@ func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifi
 		return
 	}
 
+	spec, found := classifier.GetModelSpec(item.ModelID)
+	if !found {
+		GetLogger().Debug("ultrasonic filter: unknown model, window rate unknown, skipping",
+			logger.String("model", item.ModelID))
+		return
+	}
+	windowRate := spec.EffectiveSampleRate()
+	if !ultrasonic.HasUltrasonicBand(windowRate, filterCfg.FrequencySplitHz) {
+		return
+	}
+
 	resolved := p.resolveAudioSource(item.Source)
-	sourceRate := resolved.SampleRate
-	if !ultrasonic.HasUltrasonicBand(sourceRate, filterCfg.FrequencySplitHz) {
+	if !ultrasonic.HasUltrasonicBand(resolved.SampleRate, filterCfg.FrequencySplitHz) {
 		return
 	}
 
@@ -1017,22 +1157,26 @@ func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifi
 		GetLogger().Debug("ultrasonic filter: PCM data cannot be decoded",
 			logger.String("source", sourceName),
 			logger.Int("sample_count", len(samples)),
-			logger.Int("sample_rate", sourceRate),
+			logger.Int("sample_rate", windowRate),
 			logger.Error(err))
 		return
 	}
-	cv, ok := ultrasonic.ComputeUSFrameCV(samples, sourceRate, filterCfg)
+	frameCV, ok := ultrasonic.ComputeUSFrameCV(samples, windowRate, filterCfg)
 	if !ok {
 		GetLogger().Debug("ultrasonic filter: insufficient data for CV computation",
 			logger.String("source", sourceName),
 			logger.Int("sample_count", len(samples)),
-			logger.Int("sample_rate", sourceRate))
+			logger.Int("sample_rate", windowRate))
 		return
 	}
+
+	// A click or a rustle reaches above the split too; take its share out before the verdict.
+	cv := ultrasonic.BroadbandAdjustedCV(samples, windowRate, filterCfg, frameCV)
 
 	unlikely := ultrasonic.IsUnlikely(cv, filterCfg)
 	logFields := []logger.Field{
 		logger.Float64("us_frame_cv", cv),
+		logger.Float64("us_frame_cv_unadjusted", frameCV),
 		logger.Float64("threshold", filterCfg.CVThreshold),
 		logger.Bool("unlikely", unlikely),
 		logger.String("source", sourceName),
@@ -1042,6 +1186,7 @@ func (p *Processor) applyUltrasonicFilter(settings *conf.Settings, item classifi
 		GetLogger().Info("ultrasonic validation: detections tagged unlikely", logFields...)
 		for i := range detections {
 			detections[i].Result.Unlikely = true
+			detections[i].Result.UnlikelySources |= detection.UnlikelySourceUltrasonicCV
 			detections[i].Result.UltrasonicCV = cv
 			detections[i].Result.UltrasonicCVThreshold = filterCfg.CVThreshold
 		}
@@ -1123,6 +1268,24 @@ func shouldApplyRangeFilter(modelID string, settings *conf.Settings) bool {
 		return false
 	}
 	return classifier.ParticipatesInRangeFilter(modelID)
+}
+
+// passesRangeFilter reports whether rawLabel survives the range filter for the
+// given model under the given settings snapshot: always true when the filter
+// does not apply (see shouldApplyRangeFilter), otherwise true when the species
+// is on the included list. The Last-heard feed, the primary gate in
+// shouldFilterDetection and the stored alternates all use it, so they agree on
+// one chunk.
+func passesRangeFilter(modelID string, settings *conf.Settings, rawLabel string) bool {
+	return !shouldApplyRangeFilter(modelID, settings) || settings.IsSpeciesIncluded(rawLabel)
+}
+
+// isRangeExemptLabel reports whether rawLabel is a sound-event, human or dog
+// class. Stored alternates of these classes are never range-filtered: they are
+// not geographic species, so an included list built from species ranges says
+// nothing about them.
+func isRangeExemptLabel(rawLabel string) bool {
+	return soundevent.IsLabel(rawLabel) || isHumanSoundLabel(rawLabel) || isDogDetection(rawLabel)
 }
 
 // nonFiniteConfidenceWarned guards the once-per-(model, source) warning for
@@ -1217,7 +1380,7 @@ func (p *Processor) shouldFilterDetection(settings *conf.Settings, result datast
 		return true, confidenceThreshold
 	}
 
-	if shouldApplyRangeFilter(modelID, settings) && !settings.IsSpeciesIncluded(result.Species) {
+	if !passesRangeFilter(modelID, settings, result.Species) {
 		if settings.Debug {
 			GetLogger().Debug("species not on included list",
 				logger.String("species", result.Species),
@@ -1252,6 +1415,13 @@ func isSpeciesExcluded(commonName, scientificName string, excludeList []string) 
 }
 
 // createDetection creates a detection object with all necessary information.
+// Every finite alternate prediction is carried on the returned Detections, so no
+// pipeline stage sees a trimmed list. Alternates that fail the range filter under
+// the given settings snapshot (see passesRangeFilter; sound-event, human and dog
+// classes are exempt) are tagged OutOfRange. The save step (storedAlternates)
+// drops tagged rows and rows below BirdNET.AlternateMinConfidence; the primary
+// detection and the privacy and dog filters, which read the classifier results,
+// are unaffected.
 // Its ClipName is chosen from the Result's own model and sample rate, the fields
 // the audio exporter reads.
 //
@@ -1293,8 +1463,13 @@ func (p *Processor) createDetection(settings *conf.Settings, item classifier.Res
 	detectionResult.ClipSampleRate = plannedClipSampleRate(&detectionResult, &settings.Realtime.Audio.Export)
 
 	// Convert additional results from datastore.Results to detection.AdditionalResult.
-	// Exclude the primary species since it's already stored as Detection.LabelID.
-	additionalResults := convertToAdditionalResults(item.Results, scientificName)
+	// Exclude the primary species since it's already stored as Detection.LabelID,
+	// and tag alternates that fail the same range rule as the primary, judged
+	// against this chunk's settings snapshot, so the save step can drop them.
+	keep := func(rawLabel string) bool {
+		return passesRangeFilter(item.ModelID, settings, rawLabel) || isRangeExemptLabel(rawLabel)
+	}
+	additionalResults := convertToAdditionalResults(item.Results, scientificName, keep)
 
 	// NOTE: Species tracker is NOT updated here. The tracker is updated solely
 	// through the atomic CheckAndUpdateSpecies() in DatabaseAction.ExecuteContext,
@@ -1393,7 +1568,11 @@ func (p *Processor) resolveAudioSource(source datastore.AudioSource) detection.A
 // The primary species is excluded since it's already stored as Detection.LabelID.
 // Custom BirdNET classifiers can have the same species at multiple positions in the label file,
 // producing duplicate entries in prediction results that would cause UNIQUE constraint violations.
-func convertToAdditionalResults(results []datastore.Results, primaryScientificName string) []detection.AdditionalResult {
+// Rows for which keep returns false are tagged OutOfRange instead of dropped; createDetection
+// passes the range-filter rule and storedAlternates drops the tagged rows at the save step.
+// When raw labels of one scientific name differ in verdict, the kept row wins the dedup
+// regardless of confidence, so the species stays stored.
+func convertToAdditionalResults(results []datastore.Results, primaryScientificName string, keep func(rawLabel string) bool) []detection.AdditionalResult {
 	additional := make([]detection.AdditionalResult, 0, len(results))
 	seen := make(map[string]int, len(results)) // scientificName → index in additional
 	for _, r := range results {
@@ -1404,6 +1583,7 @@ func convertToAdditionalResults(results []datastore.Results, primaryScientificNa
 		if !isFiniteConfidence(r.Confidence) {
 			continue
 		}
+		outOfRange := !keep(r.Species)
 		sp := detection.ParseSpeciesString(r.Species)
 		// Canonicalize the candidate's scientific name so the primary species is
 		// excluded even when this prediction carries it under a legacy/alias name.
@@ -1414,12 +1594,18 @@ func convertToAdditionalResults(results []datastore.Results, primaryScientificNa
 			continue
 		}
 		if idx, exists := seen[sp.ScientificName]; exists {
-			// Keep the higher confidence entry
-			if float64(r.Confidence) > additional[idx].Confidence {
+			// A kept row beats an out-of-range one; otherwise keep the higher confidence.
+			cur := additional[idx]
+			replace := float64(r.Confidence) > cur.Confidence
+			if cur.OutOfRange != outOfRange {
+				replace = cur.OutOfRange
+			}
+			if replace {
 				additional[idx] = detection.AdditionalResult{
 					Species:    sp,
 					Confidence: float64(r.Confidence),
 					RawLabel:   r.Species,
+					OutOfRange: outOfRange,
 				}
 			}
 			continue
@@ -1429,6 +1615,7 @@ func convertToAdditionalResults(results []datastore.Results, primaryScientificNa
 			Species:    sp,
 			Confidence: float64(r.Confidence),
 			RawLabel:   r.Species,
+			OutOfRange: outOfRange,
 		})
 	}
 	return additional
@@ -1527,14 +1714,16 @@ func (p *Processor) getBaseConfidenceThreshold(settings *conf.Settings, commonNa
 
 // modelGlobalConfidenceThreshold returns the global confidence threshold applied
 // to a model's detections when the species has no custom per-species threshold.
-// The Bat model always uses its own threshold. Perch v2 and BirdNET v3.0 use
-// their own threshold only when their OverrideThreshold toggle is enabled;
+// The Bat and BSG-BAT models always use their own thresholds. Perch v2, BirdNET v3.0 and BirdNET+ v3.0
+// use their own threshold only when their OverrideThreshold toggle is enabled;
 // otherwise, and for every other model (including the primary BirdNET), the
 // primary BirdNET threshold applies.
 func modelGlobalConfidenceThreshold(settings *conf.Settings, modelID string) float32 {
 	switch modelID {
 	case classifier.RegistryIDBat:
 		return float32(settings.Bat.Threshold)
+	case classifier.RegistryIDBSGBat:
+		return float32(settings.BSGBat.Threshold)
 	case classifier.RegistryIDPerchV2:
 		if settings.Perch.OverrideThreshold {
 			return float32(settings.Perch.Threshold)
@@ -1542,6 +1731,10 @@ func modelGlobalConfidenceThreshold(settings *conf.Settings, modelID string) flo
 	case classifier.RegistryIDBirdNETV3:
 		if settings.BirdNETV3.OverrideThreshold {
 			return float32(settings.BirdNETV3.Threshold)
+		}
+	case classifier.RegistryIDBirdNETPlusV3:
+		if settings.BirdNETPlus.OverrideThreshold {
+			return float32(settings.BirdNETPlus.Threshold)
 		}
 	}
 	return float32(settings.BirdNET.Threshold)
@@ -1667,8 +1860,12 @@ func (p *Processor) buildClipPath(settings *conf.Settings, scientificName string
 // privacyfilter.debug on, a summary of the detectors that counted hits
 // reaching the clip (priv.contributions, which is listed whenever the latest hit
 // reaches the clip); the counts are lower bounds once the attribution list has
-// dropped a reaching hit at its cap (priv.hitCountsLowerBound).
-func (p *Processor) shouldDiscardDetection(item *PendingDetection, settings *conf.Settings, minDetections int, priv *privacyCheck) (shouldDiscard bool, reason string) {
+// dropped a reaching hit at its cap (priv.hitCountsLowerBound). The ultrasonic
+// filter discards a detection still tagged unlikely when discardunlikely is on,
+// after those checks and before model consensus. The model consensus filter runs
+// last so the other filters keep their discard attribution; cons is the tick's
+// model view (see prepareModelConsensus) and nil skips it.
+func (p *Processor) shouldDiscardDetection(item *PendingDetection, settings *conf.Settings, minDetections int, priv *privacyCheck, cons *consensusTick) (shouldDiscard bool, reason string) {
 	// Check minimum detection count
 	if item.Count < minDetections {
 		GetLogger().Debug("Detection discarded due to insufficient count",
@@ -1781,6 +1978,22 @@ func (p *Processor) shouldDiscardDetection(item *PendingDetection, settings *con
 		}
 	}
 
+	if f := &settings.Bat.UltrasonicFilter; f.Enabled && f.DiscardUnlikely && item.Detection.Result.Unlikely {
+		GetLogger().Debug("Detection discarded by ultrasonic filter",
+			logger.String("species", item.Detection.Result.Species.CommonName),
+			logger.Time("detection_time", item.FirstDetected),
+			logger.Float64("us_frame_cv", item.Detection.Result.UltrasonicCV),
+			logger.Float64("threshold", item.Detection.Result.UltrasonicCVThreshold),
+			logger.String("unlikely_sources", item.Detection.Result.UnlikelySources.String()),
+			logger.String("source", p.getDisplayNameForSource(item.Source)),
+			logger.String("operation", "ultrasonic_filter"))
+		return true, reasonUltrasonicFilter
+	}
+
+	if cons != nil && p.discardForModelConsensus(item, settings, cons) {
+		return true, reasonModelConsensus
+	}
+
 	return false, ""
 }
 
@@ -1800,7 +2013,9 @@ func (p *Processor) recordUnscannedSave(settings *conf.Settings, item *PendingDe
 	}
 }
 
-// processApprovedDetection handles an approved detection by sending it to the worker queue
+// processApprovedDetection handles an approved detection by sending it to the worker queue.
+// Jobs whose action is the database save are queued without the PCM audio, since
+// they can wait out a retry window and read nothing from the payload.
 //
 // settings is the snapshot the privacy check used for this detection, so the saved
 // clip is built from the same configuration that was checked.
@@ -1827,25 +2042,15 @@ func (p *Processor) processApprovedDetection(item *PendingDetection, speciesName
 
 	p.normalizeDetectionTimes(item, settings)
 
-	// Populate model contributions on the Result for downstream persistence
+	// Populate model contributions on the Result for downstream persistence: the
+	// hit models plus the models active on the source without a hit.
 	if len(item.ModelContributions) > 0 {
-		item.Detection.Result.ModelContributions = make(map[string]detection.ResultModelContrib, len(item.ModelContributions))
-		for modelID, contrib := range item.ModelContributions {
-			item.Detection.Result.ModelContributions[modelID] = detection.ResultModelContrib{
-				Model:         classifier.DetectionModelInfoForID(modelID),
-				HitCount:      contrib.HitCount,
-				MaxConfidence: contrib.MaxConfidence,
-				FirstHitAt:    contrib.FirstHitAt,
-				LastHitAt:     contrib.LastHitAt,
-				MinConfidence: contrib.MinConfidence,
-				ConfidenceSum: contrib.ConfidenceSum,
-			}
-		}
+		item.Detection.Result.ModelContributions = resultModelContributions(item.ModelContributions, p.activeModelIDs(item.Source))
 	}
 
 	actionList := p.getActionsForItem(&item.Detection, settings)
 	for _, action := range actionList {
-		task := &Task{Type: TaskTypeAction, Detection: item.Detection, Action: action}
+		task := &Task{Type: TaskTypeAction, Detection: taskDetectionFor(&item.Detection, action), Action: action}
 		if err := p.EnqueueTask(task); err != nil {
 			// Check error message instead of using errors.Is to avoid import cycle
 			if err.Error() == "worker queue is full" {
@@ -1962,13 +2167,17 @@ func (p *Processor) effectiveBaseOverlap(settings *conf.Settings) time.Duration 
 // privacyCheck): the discard checks compare its speech hit, and a detection that
 // passes them is approved only when the coverage gate allows it, otherwise it
 // stays pending and is re-checked on the next tick. An approved detection is built
-// from the same settings snapshot the check used. Returns the count of pending and
-// flushed detections for logging.
+// from the same settings snapshot the check used. The model view of the model
+// consensus filter is prepared once per tick, before pendingMutex is taken.
+// Returns the count of pending and flushed detections for logging.
 func (p *Processor) flushPendingDetections() (pendingCount, flushedCount int) {
 	now := time.Now()
 	settings := p.currentSettings()
 	baseOverlap := p.effectiveBaseOverlap(settings)
 	visThresholds := precomputeVisibilityThresholds(settings, baseOverlap)
+
+	// Built before pendingMutex is taken: it may wait on the orchestrator.
+	cons := p.prepareModelConsensus(settings)
 
 	var terminalNotifs []SSEPendingDetection
 	var broadcastSnapshot []SSEPendingDetection
@@ -1995,7 +2204,7 @@ func (p *Processor) flushPendingDetections() (pendingCount, flushedCount int) {
 		// coverage that includes it, so coverage seen here never lacks its hits.
 		priv := p.checkPrivacy(settings, &item, now)
 
-		if shouldDiscard, reason := p.shouldDiscardDetection(&item, settings, itemMinDetections, &priv); shouldDiscard {
+		if shouldDiscard, reason := p.shouldDiscardDetection(&item, settings, itemMinDetections, &priv, cons); shouldDiscard {
 			// Aggregate daylight-filter discards into the periodic pipeline-stats
 			// summary so a user who sees zero saved detections has an at-a-glance
 			// signal that a filter is eating them. The per-detection log stays at
@@ -2128,7 +2337,7 @@ func (p *Processor) pendingDetectionsFlusher() {
 				pendingCount, flushedCount := p.flushPendingDetections()
 
 				if pendingCount > 0 || flushedCount > 0 {
-					GetLogger().Debug("Pending detections flusher cycle",
+					GetLogger().Trace("Pending detections flusher cycle",
 						logger.Int("pending_count", pendingCount),
 						logger.Int("flushable_count", flushedCount),
 						logger.String("operation", "pending_flusher_cycle"))
@@ -2327,9 +2536,10 @@ func (p *Processor) getDefaultActions(det *Detections, settings *conf.Settings) 
 			processor:         p,            // Add processor reference for source name resolution
 			DetectionCtx:      detectionCtx, // Share context for downstream actions
 			Result:            det.Result,   // Domain model (single source of truth)
-			Results:           det.Results,  // Domain model - converted to legacy format at save time
+			Results:           det.Results,  // Domain model - all alternates, trimmed at save
 			Ds:                p.Ds,         // Legacy - kept for backward compatibility
 			Repo:              p.Repo,       // New - preferred path for database operations
+			clipMarks:         p.clipMarks,
 			CorrelationID:     det.CorrelationID,
 		}
 	}
@@ -2394,9 +2604,14 @@ func (p *Processor) getDefaultActions(det *Detections, settings *conf.Settings) 
 	//    realtime.mqtt.retrysettings, which a step inside the composite cannot have.
 	//    The job starts after the save, so it still reads the database ID.
 	// 3. SSEAction broadcasts inline.
-	// The composite itself must never be retried: a retry would run DatabaseAction
-	// again and store a duplicate row. Without a database there is no ID to wait
-	// for, so SSE and MQTT are queued as independent actions.
+	// The database step's event-tracker verdict is the detection's only one: a
+	// detection it skips ends the composite, and MQTT and SSE inside it do not ask
+	// their own limiters, so both announce exactly the rows that were stored.
+	// The composite is retried only while its database step reports a save that
+	// stored nothing (DatabaseAction.retryPending), so a retry cannot store a
+	// second row; MQTT and SSE run once, after the save that lands. A failure whose
+	// commit outcome is unknown ends the job. Without a database there is no ID to
+	// wait for, so SSE and MQTT are queued as independent actions.
 	//
 	// This ensures:
 	// - Database save completes before downstream actions
@@ -2415,6 +2630,7 @@ func (p *Processor) getDefaultActions(det *Detections, settings *conf.Settings) 
 	if databaseAction != nil {
 		sequentialActions := []Action{databaseAction}
 		if mqttAction != nil {
+			mqttAction.gatedByDatabase = true
 			sequentialActions = append(sequentialActions, &enqueueAction{
 				action: mqttAction,
 				// No PCM data: a retrying MQTT job must not pin the audio.
@@ -2423,6 +2639,7 @@ func (p *Processor) getDefaultActions(det *Detections, settings *conf.Settings) 
 			})
 		}
 		if sseAction != nil {
+			sseAction.gatedByDatabase = true
 			sequentialActions = append(sequentialActions, sseAction)
 		}
 
@@ -2431,6 +2648,7 @@ func (p *Processor) getDefaultActions(det *Detections, settings *conf.Settings) 
 				Actions:       sequentialActions,
 				Description:   "Database save, MQTT enqueue, and SSE broadcast (sequential)",
 				CorrelationID: det.CorrelationID,
+				RetryConfig:   databaseAction.saveRetryConfig(),
 			})
 		} else {
 			actions = append(actions, databaseAction)
@@ -2514,7 +2732,8 @@ func retryConfigFromSettings(rs conf.RetrySettings) jobqueue.RetryConfig {
 // available) and returns an action that will encode and write the audio file
 // when executed by the job queue. This decouples the slower clip encoding
 // from the fast Database -> SSE pipeline. The action carries the planned
-// clip sample rate and, when the datastore can store one, a recorder to correct it.
+// clip sample rate and, when the datastore can store one, a recorder to correct it,
+// and the recorder of the clip denoise marker (nil on the legacy store).
 func (p *Processor) buildSaveAudioAction(det *Detections, detectionCtx *DetectionContext, settings *conf.Settings) *SaveAudioAction {
 	// Derive the capture length and readiness time from the shared conf helper so this
 	// scheduler and the media API (which decides whether a not-yet-written clip is still
@@ -2554,6 +2773,7 @@ func (p *Processor) buildSaveAudioAction(det *Detections, detectionCtx *Detectio
 	base := func() *SaveAudioAction {
 		return &SaveAudioAction{
 			clipRates:        p.Repo,
+			clipMarks:        p.clipMarks,
 			plannedRate:      det.Result.ClipSampleRate,
 			Settings:         settings,
 			ClipName:         det.Result.ClipName,
@@ -2813,8 +3033,41 @@ func (p *Processor) Shutdown() error {
 	return p.ShutdownWithContext(ctx)
 }
 
+// cancelThresholdLifecycle cancels the threshold persistence and cleanup
+// goroutines. It reads the cancel func under thresholdsMutex; when the mutex is
+// not free at once it waits for it in a goroutine at most until ctx ends, and
+// that goroutine still cancels once the mutex is free. cancel() is idempotent.
+func (p *Processor) cancelThresholdLifecycle(ctx context.Context) {
+	if p.thresholdsMutex.TryRLock() {
+		cancel := p.thresholdsCancel
+		p.thresholdsMutex.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+		return
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.thresholdsMutex.RLock()
+		cancel := p.thresholdsCancel
+		p.thresholdsMutex.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+	}()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		GetLogger().Warn("Context expired waiting to stop dynamic threshold goroutines during shutdown",
+			logger.String("operation", "shutdown_cancel_thresholds"))
+	}
+}
+
 // ShutdownWithContext gracefully stops all processor components, respecting
-// the provided context deadline for all internal waits.
+// the provided context deadline for all internal waits. It also stops the
+// spectrogram pre-renderer and releases the export directory handle opened for
+// it (see stopPreRenderer).
 func (p *Processor) ShutdownWithContext(ctx context.Context) error {
 	// Stop discovery debounce timer to prevent late publishes during shutdown
 	p.discoveryDebounceMu.Lock()
@@ -2823,15 +3076,11 @@ func (p *Processor) ShutdownWithContext(ctx context.Context) error {
 	}
 	p.discoveryDebounceMu.Unlock()
 
-	// Stop threshold persistence and cleanup goroutines first. Snapshot the cancel func
-	// under thresholdsMutex so this never races with StopDynamicThresholds rewriting the
-	// field when the feature is toggled off at runtime (see #1025). cancel() is idempotent.
-	p.thresholdsMutex.RLock()
-	thresholdsCancel := p.thresholdsCancel
-	p.thresholdsMutex.RUnlock()
-	if thresholdsCancel != nil {
-		thresholdsCancel()
-	}
+	// Stop threshold persistence and cleanup goroutines first. The cancel func is
+	// read under thresholdsMutex so this never races with StopDynamicThresholds
+	// rewriting the field when the feature is toggled off at runtime (see #1025);
+	// the wait for the mutex is bounded by ctx.
+	p.cancelThresholdLifecycle(ctx)
 
 	// Cancel flusher goroutine
 	if p.flusherCancel != nil {
@@ -2843,11 +3092,13 @@ func (p *Processor) ShutdownWithContext(ctx context.Context) error {
 		p.pipelineStats.Stop()
 	}
 
-	// Flush dynamic thresholds using the provided context deadline
+	// Flush dynamic thresholds using the provided context deadline. The threshold
+	// lifecycle context was cancelled above, so the flush gets the shutdown context:
+	// the connectivity retry keeps working and stops at the shutdown deadline.
 	if p.currentSettings().Realtime.DynamicThreshold.Enabled {
 		done := make(chan error, 1)
 		go func() {
-			done <- p.FlushDynamicThresholds()
+			done <- p.FlushDynamicThresholds(ctx)
 		}()
 
 		select {
@@ -2868,10 +3119,8 @@ func (p *Processor) ShutdownWithContext(ctx context.Context) error {
 		p.workerCancel()
 	}
 
-	// Stop the spectrogram pre-renderer
-	if p.preRenderer != nil {
-		p.preRenderer.Stop()
-	}
+	// Stop the spectrogram pre-renderer and release its export directory handle
+	p.stopPreRenderer()
 
 	// Release the Silero VAD detector (privacy filter). The gate mutex makes this
 	// block until any in-flight inference completes before the ONNX session is
@@ -2944,12 +3193,10 @@ func (p *Processor) ShutdownWithContext(ctx context.Context) error {
 // logDetectionResults logs detection processing results using the LogDeduplicator
 // to prevent repetitive logging while maintaining observability.
 //
-// Strategy (BG-18):
-//   - INFO level: Only when filtered_detections_count > 0 (actual detections)
-//   - DEBUG level: Zero-detection cycles (for troubleshooting without log spam)
-//
-// This prevents ~40,000+ identical "filtered_detections_count:0" logs per day
-// while still allowing debug-mode visibility into the detection pipeline.
+// With deduplication enabled, only changes and periodic heartbeats are logged,
+// at DEBUG level. With deduplication disabled every analysis window is logged,
+// at TRACE level, so it stays out of debug logs; the raw and filtered sums per
+// reporting interval are in the "pipeline stats" INFO line.
 func (p *Processor) logDetectionResults(source string, rawCount, filteredCount int) {
 	p.logDedupMu.RLock()
 	dedup := p.logDedup
@@ -2959,18 +3206,24 @@ func (p *Processor) logDetectionResults(source string, rawCount, filteredCount i
 	}
 
 	shouldLog, reason := dedup.ShouldLog(source, rawCount, filteredCount)
-
-	if shouldLog {
-		// Log all processing results at DEBUG level to avoid flooding console.
-		// Actual detections are logged at INFO when they become pending/confirmed
-		// detections (see "Created new pending detection" log message).
-		GetLogger().Debug("Detection processing results",
-			logger.String("source", p.getDisplayNameForSource(source)),
-			logger.Int("raw_results_count", rawCount),
-			logger.Int("filtered_detections_count", filteredCount),
-			logger.String("log_reason", reason),
-			logger.String("operation", "process_detections_summary"))
+	if !shouldLog {
+		return
 	}
+
+	// Actual detections are logged at INFO when they become pending/confirmed
+	// detections (see "Created new pending detection" log message).
+	fields := []logger.Field{
+		logger.String("source", p.getDisplayNameForSource(source)),
+		logger.Int("raw_results_count", rawCount),
+		logger.Int("filtered_detections_count", filteredCount),
+		logger.String("log_reason", reason),
+		logger.String("operation", "process_detections_summary"),
+	}
+	if reason == logReasonDedupDisabled {
+		GetLogger().Trace("Detection processing results", fields...)
+		return
+	}
+	GetLogger().Debug("Detection processing results", fields...)
 }
 
 // generateCorrelationID creates a unique, human-readable identifier for detection tracking
@@ -3007,8 +3260,27 @@ func generateRandomHex(length int) string {
 	return hex
 }
 
+// stopPreRenderer stops the spectrogram pre-renderer, then closes the SecureFS
+// root initPreRenderer opened for it, which Windows would otherwise keep from
+// renaming or deleting the export directory until exit. Safe to call repeatedly
+// and concurrently. p.preRenderer is not cleared: actions read it without a lock.
+func (p *Processor) stopPreRenderer() {
+	if p.preRenderer != nil {
+		p.preRenderer.Stop()
+	}
+	if sfs := p.preRendererSFS.Swap(nil); sfs != nil {
+		if err := sfs.Close(); err != nil {
+			GetLogger().Warn("Failed to close pre-renderer SecureFS",
+				logger.Error(err),
+				logger.String("operation", "prerenderer_close_securefs"))
+		}
+	}
+}
+
 // initPreRenderer initializes the spectrogram pre-renderer if enabled.
 // This is called during processor initialization if spectrogram pre-rendering is enabled in settings.
+// The processor owns the SecureFS it opens for the pre-renderer and closes it in
+// stopPreRenderer.
 func (p *Processor) initPreRenderer() {
 	p.preRendererOnce.Do(func() {
 		// Validate export path
@@ -3057,6 +3329,7 @@ func (p *Processor) initPreRenderer() {
 		pr.Start()
 
 		p.preRenderer = pr
+		p.preRendererSFS.Store(sfs)
 
 		GetLogger().Info("Spectrogram pre-renderer initialized",
 			logger.String("size", p.Settings.Realtime.Dashboard.Spectrogram.Size),

@@ -12,6 +12,8 @@
   - audioUrl: URL of the audio file to play
   - detectionId: Unique ID for the detection
   - spectrogramSize: Spectrogram display size - md/lg/xl (default: md)
+  - denoisePreset: Playback denoise default. The player loads audioUrl for metadata and
+    switches to the denoised clip on the first play (default: none)
   - onPlayStart: Callback when audio starts playing
   - onPlayEnd: Callback when audio stops playing
 -->
@@ -21,8 +23,8 @@
   import { useAudioPlayback } from '$lib/utils/useAudioPlayback.svelte';
   import { useDelayedLoading } from '$lib/utils/delayedLoading.svelte';
   import { buildAppUrl } from '$lib/utils/urlHelpers';
-  import { get } from 'svelte/store';
-  import { dashboardSettings } from '$lib/stores/settings';
+  import { audioUrlFor } from '$lib/utils/playbackDenoise';
+  import { getPlaybackDefaults } from '$lib/utils/playbackDefaults';
   import { t } from '$lib/i18n';
   import { playButtonLabelKey } from '$lib/utils/audio';
   import { loggers } from '$lib/utils/logger';
@@ -41,11 +43,22 @@
     audioUrl: string;
     detectionId: string;
     spectrogramSize?: SpectrogramSize;
+    denoisePreset?: string;
     onPlayStart?: () => void;
     onPlayEnd?: () => void;
   }
 
-  let { audioUrl, detectionId, spectrogramSize = 'md', onPlayStart, onPlayEnd }: Props = $props();
+  let {
+    audioUrl,
+    detectionId,
+    spectrogramSize = 'md',
+    denoisePreset = '',
+    onPlayStart,
+    onPlayEnd,
+  }: Props = $props();
+
+  // The clip the first play switches to; '' keeps the stored clip.
+  const playUrl = $derived(denoisePreset ? audioUrlFor(detectionId, denoisePreset) : '');
 
   // --- Audio engine (shared composable) ---
   // Initial values are intentionally captured here; audioUrl reactivity is
@@ -54,23 +67,27 @@
   // svelte-ignore state_referenced_locally
   const initialAudioUrl = audioUrl;
   // svelte-ignore state_referenced_locally
+  const initialPlayUrl = playUrl;
+  // svelte-ignore state_referenced_locally
   const initialDetectionId = detectionId;
   // svelte-ignore state_referenced_locally
   const initialOnPlayStart = onPlayStart;
   // svelte-ignore state_referenced_locally
   const initialOnPlayEnd = onPlayEnd;
-  const defaultGainDb = get(dashboardSettings)?.defaultAudioGain ?? 0;
+  const playbackDefaults = getPlaybackDefaults();
   const audio = useAudioPlayback({
     audioUrl: initialAudioUrl,
+    playUrl: initialPlayUrl,
     detectionId: initialDetectionId,
-    defaultGainDb,
+    defaultGainDb: playbackDefaults.gainDb,
+    defaultFilterFreq: playbackDefaults.highPassHz,
     onPlayStart: initialOnPlayStart,
     onPlayEnd: initialOnPlayEnd,
   });
 
   // React to prop changes
   $effect(() => {
-    audio.setAudioUrl(audioUrl);
+    audio.setAudioUrl(audioUrl, playUrl);
   });
 
   // --- Spectrogram loading ---
@@ -257,7 +274,7 @@
   <!-- Audio error -->
   {#if audio.error}
     <div class="audio-error" role="alert" aria-live="assertive">
-      <span class="text-xs text-[var(--color-error)]">{audio.error}</span>
+      <span class="text-xs text-[var(--text-error)]">{audio.error}</span>
     </div>
   {/if}
 </div>

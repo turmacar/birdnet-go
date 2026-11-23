@@ -24,9 +24,16 @@ const (
 
 // Playback gain limits in dB (UI preference, distinct from export gain)
 const (
-	MinPlaybackGain     = 0.0  // Minimum default playback gain
-	MaxPlaybackGain     = 24.0 // Maximum default playback gain (matches AudioSettingsButton GAIN_MAX_DB)
-	DefaultPlaybackGain = 0.0  // Safe default if invalid value provided
+	MinPlaybackGain     = -12.0 // Minimum default playback gain (the player toolbar's lower bound)
+	MaxPlaybackGain     = 24.0  // Maximum default playback gain (the player toolbar's upper bound)
+	DefaultPlaybackGain = 0.0   // Safe default if invalid value provided
+)
+
+// Default playback high-pass cutoff limits in Hz (applied in the browser only)
+const (
+	PlaybackHighPassOffHz   = 0    // 0 means the default high-pass filter is off
+	PlaybackHighPassFloorHz = 20   // The player's slider floor, which is off: a cutoff at or below it is stored as 0
+	MaxPlaybackHighPassHz   = 5000 // Highest default cutoff (the player's slider maximum)
 )
 
 // Audio export type constants
@@ -111,6 +118,30 @@ func normalizeAndValidateUltrasonicExportType(export *ExportSettings) error {
 			Category(errors.CategoryValidation).
 			Context("validation_type", "audio-export-ultrasonic-type").
 			Context("ultrasonic_type", export.UltrasonicType).
+			Build()
+	}
+	return nil
+}
+
+// normalizeAndValidateDenoiseStrength heals an empty denoise strength to the
+// default preset and rejects an unknown one. It runs whether or not the denoise
+// is enabled, because the switch can be flipped on without re-triggering
+// validation. Kept separate from validateAudioSettings to hold that function's
+// cyclomatic complexity down.
+func normalizeAndValidateDenoiseStrength(d *DenoiseSettings, field string) error {
+	if strings.TrimSpace(d.Strength) == "" {
+		GetLogger().Warn("denoise strength is empty, normalizing to the default preset",
+			logger.String("field", field),
+			logger.String("default", DefaultDenoisePreset),
+			logger.String("action", "normalize_denoise_strength"))
+		d.Strength = DefaultDenoisePreset
+	}
+	if !IsValidDenoisePresetName(d.Strength) {
+		return errors.Newf("unsupported denoise strength %q for %s", d.Strength, field).
+			Category(errors.CategoryValidation).
+			Context("validation_type", "denoise-strength").
+			Context("field", field).
+			Context("strength", d.Strength).
 			Build()
 	}
 	return nil
@@ -599,6 +630,10 @@ func validateAudioSettings(settings *AudioSettings) error {
 	}
 
 	if err := normalizeAndValidateUltrasonicExportType(&settings.Export); err != nil {
+		return err
+	}
+
+	if err := normalizeAndValidateDenoiseStrength(&settings.Export.Denoise, "realtime.audio.export.denoise.strength"); err != nil {
 		return err
 	}
 

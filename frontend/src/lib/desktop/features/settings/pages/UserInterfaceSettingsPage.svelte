@@ -18,13 +18,21 @@
     settingsActions,
     dashboardSettings,
     DEFAULT_SPECTROGRAM_SETTINGS,
+    type DenoiseSettings,
     type SpectrogramPreRender,
     type SpectrogramStyle,
     type SpectrogramDynamicRange,
   } from '$lib/stores/settings';
   import { hasSettingsChanged } from '$lib/utils/settingsChanges';
+  import {
+    DEFAULT_DENOISE_PRESET,
+    DENOISE_STRENGTH_OPTIONS,
+    isDenoisePresetId,
+  } from '$lib/utils/denoisePresets';
+  import { DENOISE_LOSSY_MIN_BITRATE_KBPS, isLosslessExportFormat } from './audioExportFormat';
   import { buildAppUrl } from '$lib/utils/urlHelpers';
   import SettingsTabs from '$lib/desktop/features/settings/components/SettingsTabs.svelte';
+  import SettingsGroupLabel from '$lib/desktop/features/settings/components/SettingsGroupLabel.svelte';
   import type { TabDefinition } from '$lib/desktop/features/settings/components/SettingsTabs.svelte';
   import SettingsSection from '$lib/desktop/features/settings/components/SettingsSection.svelte';
   import SettingsNote from '$lib/desktop/features/settings/components/SettingsNote.svelte';
@@ -32,16 +40,38 @@
   import SelectDropdown from '$lib/desktop/components/forms/SelectDropdown.svelte';
   import type { SelectOption } from '$lib/desktop/components/forms/SelectDropdown.types';
   import InlineSlider from '$lib/desktop/components/forms/InlineSlider.svelte';
-  import Checkbox from '$lib/desktop/components/forms/Checkbox.svelte';
+  import {
+    PLAYBACK_GAIN_MAX_DB,
+    PLAYBACK_GAIN_MIN_DB,
+    PLAYBACK_GAIN_STEP_DB,
+    PLAYBACK_HIGH_PASS_MAX_HZ,
+    PLAYBACK_HIGH_PASS_MIN_HZ,
+    PLAYBACK_HIGH_PASS_STEP_HZ,
+    clampPlaybackGain,
+    formatPlaybackGainLabel,
+    formatPlaybackHighPass,
+    highPassFromStored,
+    highPassToStored,
+  } from '$lib/utils/playbackDefaults';
+  import ToggleField from '$lib/desktop/components/forms/ToggleField.svelte';
   import FlagIcon, { type FlagLocale } from '$lib/desktop/components/ui/FlagIcon.svelte';
   import { t, getLocale } from '$lib/i18n';
   import { LOCALES } from '$lib/i18n/config';
-  import { Palette, Globe, Image, Volume2 } from '@lucide/svelte';
+  import { Palette, Globe, Image, Volume2, Info, Languages, Headphones } from '@lucide/svelte';
   import { api, ApiError } from '$lib/utils/api';
   import { toastActions } from '$lib/stores/toast';
 
   let activeTab = $state('appearance');
   let store = $derived($settingsStore);
+
+  /** Why the settings cannot be changed right now, or undefined while they can. */
+  let settingsBusyReason = $derived(
+    store.isLoading
+      ? t('settings.loading')
+      : store.isSaving
+        ? t('settings.actions.saving')
+        : undefined
+  );
 
   // --- Locale options (same pattern as MainSettingsPage) ---
   interface LocaleOption extends SelectOption {
@@ -158,6 +188,25 @@
     },
   });
 
+  // The settings coercion keeps this object complete; the fallback covers a store
+  // that has not loaded yet, so the update below always writes both fields.
+  let playbackDenoise = $derived<DenoiseSettings>(
+    settings.dashboard.playbackDenoise ?? { enabled: false, strength: DEFAULT_DENOISE_PRESET }
+  );
+  // Saved clips already denoised: the playback default is not applied then, so the
+  // controls are disabled with the reason.
+  let exportDenoiseOn = $derived(store.formData.realtime?.audio?.export?.denoise?.enabled === true);
+  let isLossyExportType = $derived(
+    !isLosslessExportFormat(store.formData.realtime?.audio?.export?.type)
+  );
+  const denoiseStrengthOptions = $derived.by(() => {
+    getLocale();
+    return DENOISE_STRENGTH_OPTIONS.map(option => ({
+      value: option.id,
+      label: t(option.labelKey),
+    }));
+  });
+
   let currentSpectrogramStyle = $derived<SpectrogramStyle>(
     (settings.dashboard.spectrogram?.style as SpectrogramStyle) ?? 'default'
   );
@@ -212,9 +261,13 @@
     hasSettingsChanged(
       {
         defaultAudioGain: store.originalData.realtime?.dashboard?.defaultAudioGain,
+        playbackDenoise: store.originalData.realtime?.dashboard?.playbackDenoise,
+        playback: store.originalData.realtime?.dashboard?.playback,
       },
       {
         defaultAudioGain: store.formData.realtime?.dashboard?.defaultAudioGain,
+        playbackDenoise: store.formData.realtime?.dashboard?.playbackDenoise,
+        playback: store.formData.realtime?.dashboard?.playback,
       }
     )
   );
@@ -223,6 +276,25 @@
   function updateDashboardSetting(key: string, value: string | number | boolean) {
     settingsActions.updateSection('realtime', {
       dashboard: { ...settings.dashboard, [key]: value },
+    });
+  }
+
+  // Writes the denoise object whole: updateSection merges shallowly, so a partial
+  // object would drop the other field.
+  function updatePlaybackDenoise(patch: Partial<DenoiseSettings>) {
+    settingsActions.updateSection('realtime', {
+      dashboard: { ...settings.dashboard, playbackDenoise: { ...playbackDenoise, ...patch } },
+    });
+  }
+
+  // Writes the playback object whole, like the denoise object: updateSection
+  // merges shallowly, so a partial object would drop the other fields.
+  function updatePlaybackHighPass(hz: number) {
+    settingsActions.updateSection('realtime', {
+      dashboard: {
+        ...settings.dashboard,
+        playback: { ...settings.dashboard.playback, highPassHz: highPassToStored(hz) },
+      },
     });
   }
 
@@ -289,6 +361,7 @@
   <div class="space-y-6">
     <SettingsSection
       title={t('settings.userInterface.appearance.title')}
+      icon={Palette}
       description={t('settings.userInterface.appearance.description')}
       originalData={{
         colorScheme: store.originalData.realtime?.dashboard?.colorScheme,
@@ -301,7 +374,7 @@
         logoStyle: store.formData.realtime?.dashboard?.logoStyle,
       }}
     >
-      <ColorSchemePicker disabled={store.isLoading || store.isSaving} />
+      <ColorSchemePicker disabledReason={settingsBusyReason} />
     </SettingsSection>
   </div>
 {/snippet}
@@ -310,6 +383,7 @@
   <div class="space-y-6">
     <SettingsSection
       title={t('settings.userInterface.language.title')}
+      icon={Languages}
       description={t('settings.userInterface.language.description')}
       originalData={{
         locale: store.originalData.realtime?.dashboard?.locale,
@@ -381,26 +455,101 @@
   <div class="space-y-6">
     <SettingsSection
       title={t('settings.userInterface.audioPlayback.title')}
+      icon={Headphones}
       description={t('settings.userInterface.audioPlayback.description')}
       originalData={{
         defaultAudioGain: store.originalData.realtime?.dashboard?.defaultAudioGain,
+        playbackDenoise: store.originalData.realtime?.dashboard?.playbackDenoise,
+        playback: store.originalData.realtime?.dashboard?.playback,
       }}
       currentData={{
         defaultAudioGain: store.formData.realtime?.dashboard?.defaultAudioGain,
+        playbackDenoise: store.formData.realtime?.dashboard?.playbackDenoise,
+        playback: store.formData.realtime?.dashboard?.playback,
       }}
     >
       <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
         <InlineSlider
           label={t('settings.userInterface.audioPlayback.defaultGain')}
           helpText={t('settings.userInterface.audioPlayback.defaultGainHelpText')}
-          value={settings.dashboard.defaultAudioGain ?? 0}
+          value={clampPlaybackGain(settings.dashboard.defaultAudioGain)}
           onUpdate={value => updateDashboardSetting('defaultAudioGain', value)}
-          min={0}
-          max={24}
-          step={1}
-          unit={t('settings.userInterface.audioPlayback.defaultGainUnit')}
+          formatValue={formatPlaybackGainLabel}
+          min={PLAYBACK_GAIN_MIN_DB}
+          max={PLAYBACK_GAIN_MAX_DB}
+          step={PLAYBACK_GAIN_STEP_DB}
           disabled={store.isLoading || store.isSaving}
         />
+        <InlineSlider
+          label={t('settings.userInterface.audioPlayback.highPassLabel')}
+          helpText={t('settings.userInterface.audioPlayback.highPassHelpText')}
+          value={highPassFromStored(settings.dashboard.playback?.highPassHz)}
+          onUpdate={updatePlaybackHighPass}
+          min={PLAYBACK_HIGH_PASS_MIN_HZ}
+          max={PLAYBACK_HIGH_PASS_MAX_HZ}
+          step={PLAYBACK_HIGH_PASS_STEP_HZ}
+          formatValue={formatPlaybackHighPass}
+          disabled={store.isLoading || store.isSaving}
+        />
+      </div>
+
+      <div class="mt-6 space-y-4">
+        {#if exportDenoiseOn}
+          <div
+            id="playback-denoise-export-precedence"
+            class="flex items-start gap-3 p-4 rounded-lg bg-[color-mix(in_srgb,var(--color-info)_15%,transparent)] text-[var(--color-base-content)]"
+          >
+            <Info class="size-6 shrink-0 text-[var(--text-info)]" aria-hidden="true" />
+            <span>{t('settings.userInterface.audioPlayback.denoiseExportPrecedence')}</span>
+          </div>
+        {/if}
+
+        <ToggleField
+          value={playbackDenoise.enabled}
+          label={t('settings.userInterface.audioPlayback.denoiseLabel')}
+          description={exportDenoiseOn
+            ? t('settings.userInterface.audioPlayback.denoiseExportPrecedence')
+            : t('settings.userInterface.audioPlayback.denoiseHelpText')}
+          disabled={exportDenoiseOn || store.isLoading || store.isSaving}
+          onUpdate={checked => updatePlaybackDenoise({ enabled: checked })}
+        />
+
+        <SelectDropdown
+          value={playbackDenoise.strength}
+          label={t('settings.userInterface.audioPlayback.denoiseStrengthLabel')}
+          helpText={playbackDenoise.enabled || exportDenoiseOn
+            ? t('settings.userInterface.audioPlayback.denoiseStrengthHelpText')
+            : t('settings.userInterface.audioPlayback.denoiseStrengthDisabledHelp')}
+          options={denoiseStrengthOptions}
+          aria-describedby={exportDenoiseOn ? 'playback-denoise-export-precedence' : undefined}
+          disabled={!playbackDenoise.enabled ||
+            exportDenoiseOn ||
+            store.isLoading ||
+            store.isSaving}
+          onChange={value => {
+            const candidate = Array.isArray(value) ? value[0] : value;
+            if (isDenoisePresetId(candidate)) {
+              updatePlaybackDenoise({ strength: candidate });
+            }
+          }}
+          groupBy={false}
+          menuSize="sm"
+        />
+
+        {#if playbackDenoise.enabled && !exportDenoiseOn}
+          <SettingsNote>
+            <p class="text-[color:var(--color-base-content)] opacity-90 text-sm">
+              {t('settings.userInterface.audioPlayback.denoiseRedenoiseNote')}
+            </p>
+            {#if isLossyExportType}
+              <p class="mt-2 text-[color:var(--color-base-content)] opacity-90 text-sm">
+                {t('settings.userInterface.audioPlayback.denoiseLossyNote', {
+                  minBitrate: DENOISE_LOSSY_MIN_BITRATE_KBPS,
+                })}
+              </p>
+            {/if}
+          </SettingsNote>
+        {/if}
       </div>
     </SettingsSection>
   </div>
@@ -410,6 +559,7 @@
   <div class="space-y-6">
     <SettingsSection
       title={t('settings.userInterface.visualContent.title')}
+      icon={Image}
       description={t('settings.userInterface.visualContent.description')}
       originalData={{
         thumbnails: store.originalData.realtime?.dashboard?.thumbnails,
@@ -423,29 +573,33 @@
       <div class="space-y-6">
         <!-- Bird Images Section -->
         <div class="space-y-4">
-          <h4 class="text-sm font-medium text-[var(--color-base-content)]/70">
+          <SettingsGroupLabel>
             {t('settings.main.sections.userInterface.dashboard.birdImages.title')}
-          </h4>
+          </SettingsGroupLabel>
 
-          <Checkbox
-            checked={settings.dashboard.thumbnails.summary}
-            label={t('settings.main.sections.userInterface.dashboard.thumbnails.summary.label')}
-            helpText={t(
-              'settings.main.sections.userInterface.dashboard.thumbnails.summary.helpText'
-            )}
-            disabled={store.isLoading || store.isSaving}
-            onchange={value => updateThumbnailSetting('summary', value)}
-          />
+          <div class="divide-y divide-[var(--border-100)]">
+            <ToggleField
+              className="pb-4"
+              value={settings.dashboard.thumbnails.summary}
+              label={t('settings.main.sections.userInterface.dashboard.thumbnails.summary.label')}
+              description={t(
+                'settings.main.sections.userInterface.dashboard.thumbnails.summary.helpText'
+              )}
+              disabled={store.isLoading || store.isSaving}
+              onUpdate={value => updateThumbnailSetting('summary', value)}
+            />
 
-          <Checkbox
-            checked={settings.dashboard.thumbnails.recent}
-            label={t('settings.main.sections.userInterface.dashboard.thumbnails.recent.label')}
-            helpText={t(
-              'settings.main.sections.userInterface.dashboard.thumbnails.recent.helpText'
-            )}
-            disabled={store.isLoading || store.isSaving}
-            onchange={value => updateThumbnailSetting('recent', value)}
-          />
+            <ToggleField
+              className="pt-4"
+              value={settings.dashboard.thumbnails.recent}
+              label={t('settings.main.sections.userInterface.dashboard.thumbnails.recent.label')}
+              description={t(
+                'settings.main.sections.userInterface.dashboard.thumbnails.recent.helpText'
+              )}
+              disabled={store.isLoading || store.isSaving}
+              onUpdate={value => updateThumbnailSetting('recent', value)}
+            />
+          </div>
 
           <div class="grid grid-cols-1 md:grid-cols-2 gap-x-6">
             <div class:opacity-50={!multipleProvidersAvailable}>
@@ -507,9 +661,9 @@
 
         <!-- Spectrograms Section -->
         <div class="space-y-4">
-          <h4 class="text-sm font-medium text-[var(--color-base-content)]/70">
+          <SettingsGroupLabel>
             {t('settings.main.sections.userInterface.dashboard.spectrogram.title')}
-          </h4>
+          </SettingsGroupLabel>
 
           <!-- Generation Mode with contextual note -->
           <div class="space-y-3">
@@ -584,7 +738,7 @@
                 {@const isSelected = currentSpectrogramStyle === style.value}
                 <button
                   type="button"
-                  class="group relative flex flex-col items-center p-2 rounded-lg border transition-all focus:outline-none focus:ring-2 focus:ring-[var(--color-primary)]/50 {isSelected
+                  class="group relative flex flex-col items-center p-2 rounded-lg border transition-all focus-ring {isSelected
                     ? 'border-[var(--color-primary)]/60 bg-[var(--color-primary)]/10 shadow-[0_0_0_1px_rgba(37,99,235,0.3)]'
                     : 'border-[var(--border-200)] bg-[var(--color-base-100)] hover:border-[var(--color-base-content)]/30'}"
                   disabled={store.isLoading || store.isSaving}
@@ -597,7 +751,7 @@
                   />
                   <span
                     class="mt-2 text-xs leading-tight text-center {isSelected
-                      ? 'text-[var(--color-primary)] font-medium'
+                      ? 'text-[var(--text-primary)] font-medium'
                       : 'text-[var(--color-base-content)]/70'}"
                   >
                     {style.label}

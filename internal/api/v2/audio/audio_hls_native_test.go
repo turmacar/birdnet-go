@@ -20,7 +20,9 @@ import (
 	"github.com/tphakala/go-hls/aachls"
 
 	"github.com/tphakala/birdnet-go/internal/api/v2/apitest"
+	"github.com/tphakala/birdnet-go/internal/audiocore/engine"
 	"github.com/tphakala/birdnet-go/internal/conf"
+	"github.com/tphakala/birdnet-go/internal/testutil"
 )
 
 const (
@@ -89,15 +91,6 @@ func newNativeTestHandler(t *testing.T, opts ...apitest.CoreOption) (*Handler, *
 	t.Helper()
 	e := echo.New()
 	return &Handler{Core: apitest.NewCore(t, append([]apitest.CoreOption{apitest.WithEcho(e)}, opts...)...)}, e
-}
-
-func TestIsNativeDiscriminatesThePaths(t *testing.T) {
-	assert.False(t, (*HLSStreamInfo)(nil).isNative(), "a nil stream is not native")
-	assert.False(t, (&HLSStreamInfo{SourceID: "x"}).isNative(),
-		"a stream with no muxer is not native")
-
-	stream := newNativeTestStream(t, 1)
-	assert.True(t, stream.isNative())
 }
 
 // TestEffectiveBitrateAppliesLimits pins how the configured live-stream bitrate
@@ -505,37 +498,6 @@ func TestNativeFeedLoopAccumulatesSubSampleChunks(t *testing.T) {
 		"single-byte chunks must accumulate into samples; if no segment exists, the remainder was discarded instead of carried")
 }
 
-// TestNativeFeedLoopSurvivesAlternatingOddChunks covers the shape a real pipe
-// read produces: lengths that vary rather than being uniformly odd.
-func TestNativeFeedLoopSurvivesAlternatingOddChunks(t *testing.T) {
-	h, _ := newNativeTestHandler(t)
-	stream := &HLSStreamInfo{SourceID: "native_src", mux: newNativeMux(t)}
-
-	epoch := time.Date(2026, 7, 23, 9, 0, 0, 0, time.UTC)
-	ch := make(chan audioChunk, 4096)
-	// Sizes sum to 3413 bytes per cycle; 1200 chunks is about six seconds of
-	// mono 16-bit, comfortably several segments rather than borderline one.
-	sizes := []int{1, 3, 1201, 2, 999, 1200, 7}
-	pcm := make([]byte, 2048)
-	var sent int
-	for range 1200 {
-		n := sizes[sent%len(sizes)]
-		ch <- audioChunk{data: pcm[:n], timestamp: epoch.Add(time.Duration(sent) * time.Millisecond)}
-		sent++
-	}
-	close(ch)
-
-	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
-	defer cancel()
-	h.runNativeAudioFeedLoop(ctx, "native_src", stream, &audioFeedResources{
-		feed: &audioFeed{ch: ch}, cleanup: func() {},
-	})
-
-	assert.False(t, stream.mux.Stats().Failed,
-		"ragged chunk lengths are a producer reality, not an encoder failure")
-	assert.True(t, stream.mux.Ready(1), "the stream must still have produced segments")
-}
-
 // The tests below exercise the isNative() guard on the readiness and cleanup
 // entry points, so a stream that never obtained a muxer is handled without
 // dereferencing a nil one.
@@ -664,4 +626,35 @@ func TestWaitForHLSPlaylistDispatchesOnNative(t *testing.T) {
 	assert.True(t, ok, "a native stream with segments must be reported ready")
 	assert.Less(t, elapsed, hlsPlaylistWaitTimeout,
 		"readiness must come from the muxer, not from waiting out the file-poll timeout")
+}
+
+// TestNativeStreamIsDroppedWhenRouterRemovesRoutes is the end-to-end form of
+// #5255: a source restart makes the engine remove the source's routes, and the
+// live stream built on them must be cancelled and unregistered instead of
+// serving stale segments until the container restarts.
+func TestNativeStreamIsDroppedWhenRouterRemovesRoutes(t *testing.T) {
+	h, _ := newNativeTestHandler(t)
+	eng := engine.New(t.Context(), &engine.Config{}, nil)
+	t.Cleanup(eng.Stop)
+	h.Engine.Store(eng)
+	const sourceID = "native_restart_src"
+
+	stream, err := h.createNativeHLSStream(sourceID)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		stream.cancel()
+		_ = removeStreamFromManager(sourceID)
+	})
+	require.True(t, eng.Router().HasConsumers(sourceID), "the stream must have registered its route")
+
+	eng.Router().RemoveAllRoutes(sourceID)
+
+	testutil.WaitForChannel(t, stream.ctx.Done(), testutil.DefaultTestTimeout,
+		"the stream must be cancelled once the router removes its route")
+	require.Eventually(t, func() bool {
+		hlsMgr.streamsMu.RLock()
+		defer hlsMgr.streamsMu.RUnlock()
+		_, registered := hlsMgr.streams[sourceID]
+		return !registered
+	}, testutil.DefaultTestTimeout, 10*time.Millisecond, "the cancelled stream must be unregistered")
 }

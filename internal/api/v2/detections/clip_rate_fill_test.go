@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -123,10 +124,14 @@ func (p *fakeProber) probe(context.Context, *os.File, string) (int, error) {
 
 func batNote(clip string, rate int) *datastore.Note {
 	return &datastore.Note{
-		ID:             rateTestNoteID,
+		ID: rateTestNoteID,
+		// The legacy bridge parses Date and Time into the result instant, and keeps the
+		// note's model only when it has a name.
+		Date:           "2026-01-02",
+		Time:           "03:04:05",
 		ClipName:       clip,
 		ClipSampleRate: rate,
-		Model:          detection.ModelInfo{ModelType: rateTestModelBat},
+		Model:          detection.ModelInfo{Name: "bat-model", ModelType: rateTestModelBat},
 	}
 }
 
@@ -138,6 +143,8 @@ func newRateHandler(t *testing.T, note *datastore.Note, prober *fakeProber) (*ec
 	t.Helper()
 	e := echo.New()
 	store := &rateStore{MockInterface: mocks.NewMockInterface(t), note: *note}
+	// GetDetection includes weather, which the dated fixture now looks up.
+	store.MockInterface.EXPECT().GetHourlyWeather(mock.Anything).Return(nil, nil).Maybe()
 	core := apitest.NewCore(t, apitest.WithEcho(e), apitest.WithDatastore(store))
 	h := buildTestHandler(t, core, map[string]string{}, map[string]string{})
 	h.clipRateWait = rateTestWait
@@ -384,15 +391,17 @@ func TestGetDetection_LazyFill_ClosesTheClipHandle(t *testing.T) {
 				handle = f
 				return tt.probe(f)
 			}
+			// Seek is the closed-handle check: on Windows File.Stat does not
+			// report os.ErrClosed for a closed file.
 			store.onFill = func() {
-				_, err := handle.Stat()
+				_, err := handle.Seek(0, io.SeekCurrent)
 				assert.ErrorIs(t, err, os.ErrClosed, "the handle is closed before the write")
 			}
 
 			getDetectionRate(t, e, h)
 
 			require.Equal(t, 1, probes, "the probe ran once")
-			_, err := handle.Stat()
+			_, err := handle.Seek(0, io.SeekCurrent)
 			require.ErrorIs(t, err, os.ErrClosed, "the handle is closed once the request has answered")
 			if tt.writes {
 				assert.Equal(t, 1, store.fills(), "the write ran, so the before-write check ran")
@@ -518,7 +527,7 @@ func TestListAndSearch_NeverProbe(t *testing.T) {
 	e, h, store := newRateHandler(t, batNote(rateTestClipName, 0), prober)
 	mockDS := store.MockInterface
 	notes := []datastore.Note{*batNote(rateTestClipName, 0)}
-	mockDS.On("SearchNotes", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(notes, int64(len(notes)), nil)
+	mockDS.On("SearchNotesAdvanced", mock.Anything).Return(notes, int64(len(notes)), nil)
 	mockDS.On("GetLastDetections", mock.Anything).Return(notes, nil)
 	mockDS.On("SearchDetections", mock.Anything).Return([]datastore.DetectionRecord{{ID: "1", ModelType: rateTestModelBat}}, 1, nil)
 
@@ -543,20 +552,62 @@ func TestListAndSearch_NeverProbe(t *testing.T) {
 	assert.Zero(t, store.fills())
 }
 
-func TestNoteToDetectionResponse_ClipSampleRate(t *testing.T) {
+func TestResultToDetectionResponse_ClipSampleRate(t *testing.T) {
 	_, _, h := setupTestEnvironment(t)
 
-	resp := h.noteToDetectionResponse(&datastore.Note{ClipName: rateTestClipName, ClipSampleRate: rateTestBatRate}, false, nil)
+	resp := h.resultToDetectionResponse(&detection.Result{ClipName: rateTestClipName, ClipSampleRate: rateTestBatRate}, false, nil)
 	assert.Equal(t, rateTestBatRate, resp.ClipSampleRate)
 	body, err := json.Marshal(resp)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), `"clipSampleRate":384000`)
 
-	resp = h.noteToDetectionResponse(&datastore.Note{ClipName: rateTestClipName}, false, nil)
+	resp = h.resultToDetectionResponse(&detection.Result{ClipName: rateTestClipName}, false, nil)
 	assert.Zero(t, resp.ClipSampleRate)
 	body, err = json.Marshal(resp)
 	require.NoError(t, err)
 	assert.NotContains(t, string(body), "clipSampleRate", "an unknown rate is omitted")
+}
+
+func TestResultToDetectionResponse_ClipDenoised(t *testing.T) {
+	_, _, h := setupTestEnvironment(t)
+
+	resp := h.resultToDetectionResponse(&detection.Result{ClipName: rateTestClipName, ClipDenoised: true}, false, nil)
+	assert.True(t, resp.ClipDenoised)
+	body, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), `"clipDenoised":true`)
+
+	resp = h.resultToDetectionResponse(&detection.Result{ClipName: rateTestClipName}, false, nil)
+	assert.False(t, resp.ClipDenoised)
+	body, err = json.Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "clipDenoised", "a clip that was not denoised omits the field")
+}
+
+func TestResultToDetectionResponse_OriginalSpecies(t *testing.T) {
+	_, _, h := setupTestEnvironment(t)
+	original := detection.Species{ScientificName: "Turdus merula", CommonName: "Eurasian Blackbird", Code: "eurbla"}
+	const wantJSON = `"originalSpecies":{"scientificName":"Turdus merula","commonName":"Eurasian Blackbird","speciesCode":"eurbla"}`
+
+	changed := &detection.Result{Species: detection.Species{ScientificName: "Parus major"}, OriginalSpecies: original}
+	resp := h.resultToDetectionResponse(changed, false, nil)
+	require.NotNil(t, resp.OriginalSpecies)
+	body, err := json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), wantJSON)
+	assert.Equal(t, original, changed.OriginalSpecies, "the shared result is not written through")
+
+	// Changed back: the original equals the current species and is still reported.
+	resp = h.resultToDetectionResponse(&detection.Result{Species: original, OriginalSpecies: original}, false, nil)
+	body, err = json.Marshal(resp)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), wantJSON)
+
+	resp = h.resultToDetectionResponse(&detection.Result{Species: original}, false, nil)
+	assert.Nil(t, resp.OriginalSpecies)
+	body, err = json.Marshal(resp)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), "originalSpecies", "a detection whose species was never changed omits the field")
 }
 
 // TestGetDetection_LazyFill_WorkTimeoutAndDetach verifies the shared work is

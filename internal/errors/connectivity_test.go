@@ -9,7 +9,6 @@ import (
 	"os"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"github.com/stretchr/testify/assert"
@@ -20,14 +19,6 @@ import (
 // connect is refused, without touching the network.
 func refusedDialError(errno syscall.Errno) error {
 	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", errno)}
-}
-
-// resetConnectivityWindow clears the connectivity rate limit window now and
-// when the test ends. Tests that use it must not run in parallel.
-func resetConnectivityWindow(t *testing.T) {
-	t.Helper()
-	connectivityLimiter.last.Store(0)
-	t.Cleanup(func() { connectivityLimiter.last.Store(0) })
 }
 
 // flatten returns an error with the message prefix + ": " + err, and no chain.
@@ -95,39 +86,84 @@ func TestIsConnectivityError(t *testing.T) {
 	}
 }
 
-func TestShouldReportToSentry_RateLimitsConnectivity(t *testing.T) {
-	resetConnectivityWindow(t)
+func TestIsUnsentError(t *testing.T) {
+	t.Parallel()
+
+	refused := refusedDialError(syscall.ECONNREFUSED)
+	server1045 := &mysql.MySQLError{Number: 1045, SQLState: [5]byte{'2', '8', '0', '0', '0'}, Message: "Access denied for user 'dial'@'host' (connection refused)"}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"connection refused", refused, true},
+		{"wrapped connection refused", fmt.Errorf("get/create model: %w", refused), true},
+		{"dns error", &net.DNSError{Err: "no such host", Name: "db", IsNotFound: true}, true},
+		{"dial timeout", &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}, true},
+		{"wrapped bad conn", fmt.Errorf("x: %w", driver.ErrBadConn), true},
+		{"flattened refused", flatten("x", refused), true},
+
+		{"nil", nil, false},
+		// The row that matters: the driver returns this for a COMMIT whose
+		// outcome is unknown, so it must not count as "nothing was sent".
+		{"wrapped invalid connection", fmt.Errorf("commit: %w", mysql.ErrInvalidConn), false},
+		{"bare invalid connection", mysql.ErrInvalidConn, false},
+		{"mysql server error mentioning dial", NewStd(server1045.Error()), false},
+		{"mysql server error type", server1045, false},
+		{"listener error", &net.OpError{Op: "listen", Net: "tcp", Err: os.NewSyscallError("bind", syscall.EADDRINUSE)}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, IsUnsentError(tt.err))
+		})
+	}
+}
+
+func TestShouldReportToSentry_DropsDatabaseConnectivity(t *testing.T) {
+	t.Parallel()
 
 	build := func(cat ErrorCategory, err error) *EnhancedError {
 		return New(err).Component("test").Category(cat).Build()
 	}
 	refused := refusedDialError(syscall.ECONNREFUSED)
-
-	// A bare context error is not a connectivity failure and stays dropped
-	// without taking the window, as does a canceled dial.
-	assert.False(t, shouldReportToSentry(build(CategoryDatabase, context.DeadlineExceeded)), "bare context deadline stays dropped")
-	assert.False(t, shouldReportToSentry(build(CategoryDatabase, &net.OpError{Op: "dial", Net: "tcp", Err: context.Canceled})), "canceled dial stays dropped")
-	lowPriority := New(&net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}).
-		Component("test").Category(CategorySystem).Priority(PriorityLow).Build()
-	assert.False(t, shouldReportToSentry(lowPriority), "low priority system errors stay dropped")
-
-	// A real dial timeout is also a context deadline error. It is a connectivity
-	// failure, so it reaches the window instead of being dropped as a context
-	// interruption: the first one is sent, the next ones are rate limited.
 	dialDeadline := &net.OpError{Op: "dial", Net: "tcp", Err: context.DeadlineExceeded}
 	require.True(t, isContextCancellation(dialDeadline), "the real dial timeout is also a context deadline")
-	assert.True(t, shouldReportToSentry(build(CategoryDatabase, dialDeadline)), "first dial timeout is sent")
-	assert.False(t, shouldReportToSentry(build(CategorySystem, dialDeadline)), "second dial timeout is rate limited")
-	connectivityLimiter.last.Store(0)
+	// The udp network keeps the message from matching the flattened tcp dial
+	// text, so only the typed timeout check can recognise it.
+	udpDialTimeout := &net.OpError{Op: "dial", Net: "udp", Err: os.ErrDeadlineExceeded}
+	server1364 := &mysql.MySQLError{Number: 1364, Message: "Field 'x' doesn't have a default value"}
 
-	assert.True(t, shouldReportToSentry(build(CategoryDatabase, refused)), "first connectivity event is sent")
-	assert.False(t, shouldReportToSentry(build(CategoryState, mysql.ErrInvalidConn)), "window is shared across categories and classes")
-	assert.False(t, shouldReportToSentry(build(CategorySystem, build(CategoryDatabase, refused))), "wrapped dial error is rate limited")
-	assert.True(t, shouldReportToSentry(build(CategoryDatabase, &mysql.MySQLError{Number: 1364, Message: "Field 'x' doesn't have a default value"})), "defects are never rate limited")
-	assert.True(t, shouldReportToSentry(build(CategoryIntegration, refused)), "other categories keep today's behaviour")
+	tests := []struct {
+		name       string
+		ee         *EnhancedError
+		wantReport bool
+	}{
+		{"dial timeout in database", build(CategoryDatabase, dialDeadline), false},
+		{"udp dial timeout in state", build(CategoryState, udpDialTimeout), false},
+		{"udp dial timeout in image cache", build(CategoryImageCache, udpDialTimeout), false},
+		{"refused dial in database", build(CategoryDatabase, refused), false},
+		{"invalid connection in state", build(CategoryState, mysql.ErrInvalidConn), false},
+		{"wrapped dial in system", build(CategorySystem, build(CategoryDatabase, refused)), false},
+		{"dns error in image cache", build(CategoryImageCache, &net.DNSError{Err: "no such host", Name: "x", IsNotFound: true}), false},
+		{"canceled dial", build(CategoryDatabase, &net.OpError{Op: "dial", Net: "tcp", Err: context.Canceled}), false},
+		{"bare context deadline", build(CategoryDatabase, context.DeadlineExceeded), false},
+		{"mysql server error joined with a connection error", build(CategoryDatabase, gormJoin(refused, server1364)), true},
+		{"mysql server error", build(CategoryDatabase, server1364), true},
+		{"refused dial in an ungated category", build(CategoryIntegration, refused), true},
+	}
 
-	connectivityLimiter.last.Store(connectivityLimiter.last.Load() - int64(connectivityReportCooldown/time.Second) - 1)
-	assert.True(t, shouldReportToSentry(build(CategoryImageCache, &net.DNSError{Err: "no such host", Name: "x", IsNotFound: true})), "window expires")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			// Evaluated twice: the verdict is deterministic and no event is
+			// let through first as it used to be under the hourly window.
+			assert.Equal(t, tt.wantReport, shouldReportToSentry(tt.ee), "first evaluation")
+			assert.Equal(t, tt.wantReport, shouldReportToSentry(tt.ee), "second evaluation")
+		})
+	}
 }
 
 // hidingWrapperError is an error whose message omits its wrapped child.

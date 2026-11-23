@@ -6,11 +6,25 @@ import {
   screen,
 } from '../../../../test/render-helpers';
 import LoginModal from './LoginModal.svelte';
+import { api } from '$lib/utils/api';
+import { unsavedChanges } from '$lib/stores/unsavedChanges.svelte';
 
 // Mock the api module
 vi.mock('$lib/utils/api', () => ({
   api: {
     post: vi.fn(),
+  },
+  ApiError: class ApiError extends Error {
+    status: number;
+    response: Response;
+    userMessage: string;
+    constructor(message: string, status: number, response: Response) {
+      super(message);
+      this.name = 'ApiError';
+      this.status = status;
+      this.response = response;
+      this.userMessage = message;
+    }
   },
 }));
 
@@ -38,6 +52,7 @@ describe('LoginModal', () => {
   function mockWindowLocation(pathname = '/ui/', search = '') {
     const mockLocation = {
       href: '',
+      origin: 'http://localhost',
       pathname,
       search,
       reload: vi.fn(),
@@ -86,6 +101,172 @@ describe('LoginModal', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  // First in the file: the sign-in tests below leave 500 ms reload timers pending, and one firing
+  // during these tests would add a navigation they do not expect.
+  describe('hard navigations with an unsaved draft', () => {
+    let prevented: boolean[];
+    let unregister: (() => void) | undefined;
+
+    // A native leave prompt would run when the navigation starts, so the location stand-in
+    // fires beforeunload at the moment the page is told to go, and the test reads whether it
+    // would have been held.
+    function navigationProbe() {
+      const fire = () => {
+        const event = new Event('beforeunload', { cancelable: true });
+        window.dispatchEvent(event);
+        prevented.push(event.defaultPrevented);
+      };
+      const location = mockWindowLocation();
+      Object.defineProperty(location, 'href', {
+        set: () => {
+          fire();
+        },
+        get: () => '',
+        configurable: true,
+      });
+      location.reload = vi.fn(fire);
+      return location;
+    }
+
+    function renderOpen() {
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: { basicEnabled: true, enabledProviders: ['google'] },
+      });
+    }
+
+    beforeEach(() => {
+      prevented = [];
+      // Earlier sign-in tests set the allowance on the singleton; start from a clean one.
+      unsavedChanges.resetForTesting();
+      unregister = unsavedChanges.register({ isDirty: () => true });
+    });
+
+    afterEach(() => {
+      unregister?.();
+      unsavedChanges.resetForTesting();
+      vi.useRealTimers();
+    });
+
+    it('does not let the native prompt hold the start of an OAuth sign-in', async () => {
+      navigationProbe();
+      renderOpen();
+
+      await fireEvent.click(screen.getByRole('button', { name: /continueWithGoogle/i }));
+
+      expect(prevented).toEqual([false]);
+    });
+
+    it('does not let the native prompt hold the OAuth callback after a password sign-in', async () => {
+      navigationProbe();
+      vi.mocked(api.post).mockResolvedValueOnce({ success: true, redirectUrl: '/auth/callback' });
+      renderOpen();
+      await fireEvent.input(screen.getByLabelText('auth.password'), { target: { value: 'pw' } });
+
+      await fireEvent.click(screen.getByRole('button', { name: /continue with password/i }));
+
+      await waitFor(() => expect(prevented).toEqual([false]));
+    });
+
+    it('does not let the native prompt hold the reload after a password sign-in', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      navigationProbe();
+      vi.mocked(api.post).mockResolvedValueOnce({ success: true });
+      renderOpen();
+      await fireEvent.input(screen.getByLabelText('auth.password'), { target: { value: 'pw' } });
+
+      await fireEvent.click(screen.getByRole('button', { name: /continue with password/i }));
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(prevented).toEqual([false]);
+    });
+
+    // The reload waits a moment after the sign-in; the page must stay blocked meanwhile, or an
+    // edit made in that window would be lost to the reload without a prompt.
+    it('keeps the modal open and undismissable until the reload after a password sign-in', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const location = navigationProbe();
+      vi.mocked(api.post).mockResolvedValueOnce({ success: true });
+      const onClose = vi.fn();
+      loginModalTest.render({
+        isOpen: true,
+        onClose,
+        authConfig: { basicEnabled: true, enabledProviders: ['google'] },
+      });
+      await fireEvent.input(screen.getByLabelText('auth.password'), { target: { value: 'pw' } });
+
+      await fireEvent.click(screen.getByRole('button', { name: /continue with password/i }));
+      await vi.advanceTimersByTimeAsync(100);
+      await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+
+      expect(onClose).not.toHaveBeenCalled();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(location.reload).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(400);
+
+      expect(location.reload).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('dismissing while a password sign-in is pending', () => {
+    // A dismissed modal whose request later succeeds would still reload the page past the leave
+    // prompt, so the modal stays until the attempt has an answer.
+    function startPendingSignIn() {
+      const onClose = vi.fn();
+      const onCancel = vi.fn();
+      vi.mocked(api.post).mockReturnValueOnce(new Promise(() => {}));
+      loginModalTest.render({
+        isOpen: true,
+        onClose,
+        onCancel,
+        authConfig: { basicEnabled: true, enabledProviders: [] },
+      });
+      return { onClose, onCancel };
+    }
+
+    async function submitPassword() {
+      await fireEvent.input(screen.getByLabelText('auth.password'), { target: { value: 'pw' } });
+      await fireEvent.click(screen.getByRole('button', { name: /continue with password/i }));
+      await waitFor(() => expect(api.post).toHaveBeenCalled());
+    }
+
+    it('ignores the close button', async () => {
+      const { onClose, onCancel } = startPendingSignIn();
+      await submitPassword();
+
+      await fireEvent.click(screen.getByRole('button', { name: /close login dialog/i }));
+
+      expect(onClose).not.toHaveBeenCalled();
+      expect(onCancel).not.toHaveBeenCalled();
+    });
+
+    it('ignores Escape', async () => {
+      const { onClose, onCancel } = startPendingSignIn();
+      await submitPassword();
+
+      await fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+
+      expect(onClose).not.toHaveBeenCalled();
+      expect(onCancel).not.toHaveBeenCalled();
+    });
+
+    it('still closes when no sign-in is pending', async () => {
+      const onCancel = vi.fn();
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        onCancel,
+        authConfig: { basicEnabled: true, enabledProviders: [] },
+      });
+
+      await fireEvent.click(screen.getByRole('button', { name: /close login dialog/i }));
+
+      expect(onCancel).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('Redirect URL Validation', () => {
@@ -436,7 +617,7 @@ describe('LoginModal', () => {
 
       // The endpoint must carry the ingress prefix; without it the browser
       // leaves the proxy path entirely and the request never reaches the app.
-      expect(mockLocation.href).toBe('/api/hassio_ingress/TOKEN/auth/google');
+      expect(mockLocation.href).toBe('/api/hassio_ingress/TOKEN/auth/google?remember=1');
     });
 
     it('should leave the OAuth redirect unchanged for direct access (no proxy prefix)', async () => {
@@ -455,7 +636,146 @@ describe('LoginModal', () => {
       await fireEvent.click(googleButton);
       await new Promise(resolve => setTimeout(resolve, 100));
 
-      expect(mockLocation.href).toBe('/auth/google');
+      expect(mockLocation.href).toBe('/auth/google?remember=1');
+    });
+  });
+
+  describe('Remember this browser', () => {
+    const rememberCheckbox = () => screen.getByRole('checkbox', { name: /auth\.rememberBrowser/ });
+
+    it('is ticked by default', () => {
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: { basicEnabled: true, enabledProviders: [] },
+      });
+
+      expect(rememberCheckbox()).toBeChecked();
+    });
+
+    it.each([
+      { ticked: true, expected: true },
+      { ticked: false, expected: false },
+    ])(
+      'sends rememberBrowser=$expected with the password when ticked=$ticked',
+      async ({ ticked, expected }) => {
+        const { api } = await import('$lib/utils/api');
+        const postSpy = vi.mocked(api.post);
+        postSpy.mockResolvedValue({ success: true, message: 'Login successful' });
+        mockWindowLocation('/ui/dashboard');
+
+        loginModalTest.render({
+          isOpen: true,
+          onClose: vi.fn(),
+          authConfig: { basicEnabled: true, enabledProviders: [] },
+        });
+
+        if (!ticked) {
+          await fireEvent.click(rememberCheckbox());
+        }
+        await fireEvent.input(screen.getByLabelText('auth.password'), {
+          target: { value: 'valid-password' },
+        });
+        await fireEvent.click(screen.getByRole('button', { name: /continue with password/i }));
+
+        await waitFor(() => {
+          expect(postSpy).toHaveBeenCalledWith(
+            '/api/v2/auth/login',
+            expect.objectContaining({ rememberBrowser: expected })
+          );
+        });
+      }
+    );
+
+    it('adds remember=1 to the provider redirect only when ticked, keeping the base path', async () => {
+      const mockLocation = mockWindowLocation('/api/hassio_ingress/TOKEN/ui/dashboard');
+
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: { basicEnabled: false, enabledProviders: ['google'] },
+      });
+
+      await fireEvent.click(rememberCheckbox());
+      await fireEvent.click(screen.getByRole('button', { name: /continueWithGoogle/i }));
+
+      await waitFor(() => {
+        expect(mockLocation.href).toBe('/api/hassio_ingress/TOKEN/auth/google');
+      });
+    });
+
+    it('appends remember=1 with & when the provider endpoint already has a query', async () => {
+      const mockLocation = mockWindowLocation('/ui/');
+
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: {
+          basicEnabled: false,
+          enabledProviders: ['google'],
+          endpoints: { google: '/auth/google?prompt=login' },
+        },
+      });
+
+      await fireEvent.click(screen.getByRole('button', { name: /continueWithGoogle/i }));
+
+      await waitFor(() => {
+        expect(mockLocation.href).toBe('/auth/google?prompt=login&remember=1');
+      });
+    });
+
+    it('removes a remember parameter already in an overridden endpoint when unticked', async () => {
+      const mockLocation = mockWindowLocation('/ui/');
+
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: {
+          basicEnabled: false,
+          enabledProviders: ['google'],
+          endpoints: { google: '/auth/google?remember=1&prompt=login' },
+        },
+      });
+
+      await fireEvent.click(rememberCheckbox());
+      await fireEvent.click(screen.getByRole('button', { name: /continueWithGoogle/i }));
+
+      await waitFor(() => {
+        expect(mockLocation.href).toBe('/auth/google?prompt=login');
+      });
+    });
+
+    it('shows one checkbox with password and providers and sends its state to the provider URL', async () => {
+      const mockLocation = mockWindowLocation('/ui/');
+
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: { basicEnabled: true, enabledProviders: ['google'] },
+      });
+
+      expect(screen.getAllByRole('checkbox', { name: /auth\.rememberBrowser/ })).toHaveLength(1);
+
+      await fireEvent.click(rememberCheckbox());
+      await fireEvent.click(screen.getByRole('button', { name: /continueWithGoogle/i }));
+
+      await waitFor(() => {
+        expect(mockLocation.href).toBe('/auth/google');
+      });
+    });
+
+    it('disables the checkbox while a sign-in is in progress', async () => {
+      mockWindowLocation('/ui/');
+
+      loginModalTest.render({
+        isOpen: true,
+        onClose: vi.fn(),
+        authConfig: { basicEnabled: true, enabledProviders: ['google'] },
+      });
+
+      await fireEvent.click(screen.getByRole('button', { name: /continueWithGoogle/i }));
+
+      expect(rememberCheckbox()).toBeDisabled();
     });
   });
 
@@ -583,6 +903,85 @@ describe('LoginModal', () => {
 
       await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
       expect(onCancel).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Login failure message', () => {
+    const HTTP_BAD_REQUEST = 400;
+    const HTTP_UNAUTHORIZED = 401;
+    const HTTP_FORBIDDEN = 403;
+    const HTTP_TOO_MANY_REQUESTS = 429;
+    const HTTP_SERVER_ERROR = 500;
+    const HTTP_SERVICE_UNAVAILABLE = 503;
+    // Stand in for the translated messages the server's 429 responses carry.
+    const ATTEMPT_LIMIT_MESSAGE = 'Too many login attempts, try again later';
+    const SECOND_ATTEMPT_LIMIT_MESSAGE = 'Still too many login attempts';
+
+    type ApiErrorClass = new (message: string, status: number, response: Response) => Error;
+
+    function apiFailure(ApiError: ApiErrorClass, status: number, message = ATTEMPT_LIMIT_MESSAGE) {
+      return new ApiError(message, status, new Response(null, { status }));
+    }
+
+    // Renders the dialog, makes the next login requests fail with the given
+    // failures in order, and returns what a test needs to submit again.
+    async function renderFailingLogin(...failures: Error[]) {
+      const { api } = await import('$lib/utils/api');
+      const post = vi.mocked(api.post);
+      post.mockReset();
+      for (const failure of failures) {
+        post.mockRejectedValueOnce(failure);
+      }
+      const onClose = vi.fn();
+      loginModalTest.render({
+        isOpen: true,
+        onClose,
+        authConfig: { basicEnabled: true, enabledProviders: [] },
+      });
+
+      const passwordInput = screen.getByLabelText('auth.password');
+      await fireEvent.input(passwordInput, { target: { value: 'wrong-password' } });
+      const submit = screen.getByRole('button', { name: /continue with password/i });
+      return { post, onClose, passwordInput, submit };
+    }
+
+    it('shows the server message when the attempt limit is used up (429)', async () => {
+      const { ApiError } = await import('$lib/utils/api');
+      const { post, onClose, passwordInput, submit } = await renderFailingLogin(
+        apiFailure(ApiError, HTTP_TOO_MANY_REQUESTS),
+        apiFailure(ApiError, HTTP_TOO_MANY_REQUESTS, SECOND_ATTEMPT_LIMIT_MESSAGE)
+      );
+
+      await fireEvent.click(submit);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent(ATTEMPT_LIMIT_MESSAGE);
+      expect(alert).not.toHaveTextContent('auth.errors.loginFailed');
+      expect(onClose).not.toHaveBeenCalled();
+
+      // The form is usable again, and another refused attempt reports its own message.
+      expect(passwordInput).toBeEnabled();
+      expect(submit).toBeEnabled();
+      await fireEvent.click(submit);
+      await waitFor(() =>
+        expect(screen.getByRole('alert')).toHaveTextContent(SECOND_ATTEMPT_LIMIT_MESSAGE)
+      );
+      expect(post).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['a bad request', HTTP_BAD_REQUEST],
+      ['a rejected password', HTTP_UNAUTHORIZED],
+      ['a forbidden request', HTTP_FORBIDDEN],
+      ['a server error', HTTP_SERVER_ERROR],
+      ['an unavailable server', HTTP_SERVICE_UNAVAILABLE],
+    ])('keeps the generic message for %s', async (_name, status) => {
+      const { ApiError } = await import('$lib/utils/api');
+      const { submit } = await renderFailingLogin(apiFailure(ApiError, status));
+
+      await fireEvent.click(submit);
+      const alert = await screen.findByRole('alert');
+      expect(alert).toHaveTextContent('auth.errors.loginFailed');
+      expect(alert).not.toHaveTextContent(ATTEMPT_LIMIT_MESSAGE);
     });
   });
 
@@ -967,14 +1366,10 @@ describe('LoginModal', () => {
         );
       });
 
-      // Verify modal closes after successful login
-      await waitFor(() => {
-        expect(onCloseMock).toHaveBeenCalled();
-      });
-
-      // Verify page refresh is called (simulating successful login)
+      // The page reloads after a successful login; the modal stays open until then
       await new Promise(resolve => setTimeout(resolve, 600)); // Wait for timeout
       expect(mockLocation.reload).toHaveBeenCalled();
+      expect(onCloseMock).not.toHaveBeenCalled();
     });
 
     it('should handle OAuth callback redirect preserving original URL', async () => {

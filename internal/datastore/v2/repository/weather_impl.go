@@ -2,12 +2,10 @@ package repository
 
 import (
 	"context"
-	"time"
 
 	"github.com/tphakala/birdnet-go/internal/datastore"
 	"github.com/tphakala/birdnet-go/internal/datastore/v2/entities"
 	"github.com/tphakala/birdnet-go/internal/errors"
-	"github.com/tphakala/birdnet-go/internal/wallclock"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -103,33 +101,6 @@ func (r *weatherRepository) GetHourlyWeather(ctx context.Context, date string) (
 	return weather, err
 }
 
-// GetHourlyWeatherInLocation retrieves hourly weather for a date in a specific timezone.
-func (r *weatherRepository) GetHourlyWeatherInLocation(ctx context.Context, date string, loc *time.Location) ([]entities.HourlyWeather, error) {
-	day, err := wallclock.ParseDate(date)
-	if err != nil {
-		return nil, err
-	}
-	// The local day is [start, end), which is shorter or longer than 24 hours across a DST change and starts
-	// at the transition instant where the change skips midnight.
-	startOfDay, endOfDay := wallclock.DayBounds(day, loc)
-
-	var weather []entities.HourlyWeather
-	// Convert timestamps to Unix epoch seconds for comparison.
-	// This handles legacy records stored with local timezone offsets alongside new UTC records.
-	var whereClause string
-	if r.isMySQL {
-		whereClause = "UNIX_TIMESTAMP(time) >= UNIX_TIMESTAMP(?) AND UNIX_TIMESTAMP(time) < UNIX_TIMESTAMP(?)"
-	} else {
-		whereClause = "strftime('%s', time) >= strftime('%s', ?) AND strftime('%s', time) < strftime('%s', ?)"
-	}
-
-	err = r.db.WithContext(ctx).Table(r.hourlyWeatherTable()).
-		Where(whereClause, startOfDay, endOfDay).
-		Order("time ASC").
-		Find(&weather).Error
-	return weather, err
-}
-
 // LatestHourlyWeather retrieves the most recent hourly weather entry.
 func (r *weatherRepository) LatestHourlyWeather(ctx context.Context) (*entities.HourlyWeather, error) {
 	var weather entities.HourlyWeather
@@ -172,10 +143,7 @@ func (r *weatherRepository) SaveAllDailyEvents(ctx context.Context, events []ent
 
 		err := datastore.RetryOnLock(ctx, "v2_save_all_daily_events", func() error {
 			return r.db.WithContext(ctx).Table(r.dailyEventsTable()).
-				Clauses(clause.OnConflict{
-					Columns:   []clause.Column{{Name: "date"}},
-					DoNothing: true,
-				}).
+				Clauses(onConflictSkip(r.isMySQL, dailyEventsDateColumn, clause.Column{Name: dailyEventsDateColumn})).
 				Create(&batch).Error
 		}, r.metrics)
 		if err != nil {

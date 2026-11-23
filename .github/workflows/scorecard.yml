@@ -7,20 +7,15 @@ name: OpenSSF Scorecard
 # publish_results is enabled, to the public Scorecard API that backs the
 # Scorecard badge and deps.dev.
 on:
-  # Weekly re-score so drift (a new dependency, a relaxed setting) surfaces
-  # without waiting for the next push.
+  # Weekly re-score; the badge does not need a fresh score after every merge.
+  # Scorecard analyzes only the default branch.
   schedule:
     - cron: '27 6 * * 1'
-  # Re-score on every push to the default branch so changes are reflected
-  # promptly. Scorecard analyzes only the default branch.
-  push:
-    branches:
-      - main
   # Needed for the Branch-Protection check to read the ruleset via the token
   # granted on this event.
   branch_protection_rule:
 
-# Cancel an in-flight run when a newer commit lands on main.
+# Cancel an in-flight run when a newer one starts.
 concurrency:
   group: scorecard-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -63,6 +58,6 @@ jobs:
 
       # Surface the findings in the Security > Code scanning tab.
       - name: Upload to code-scanning
-        uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: results.sarif

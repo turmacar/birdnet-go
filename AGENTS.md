@@ -73,9 +73,30 @@ yourself before touching code in that area.
 - **Reconcile database problems safely; never migrate data on your own.** When
   startup or runtime code finds a recoverable database problem, it repairs it
   automatically as long as no row of user data is lost or hidden and the repair
-  is logged. A data migration (SQLite to MySQL, legacy to v2, copying or
+  is logged (two regenerable cache tables are not user data; the exception and
+  its conditions are in `internal/datastore/AGENTS.md`). A data migration (SQLite to MySQL, legacy to v2, copying or
   consolidating databases) never starts by itself; only an explicit user action
   starts it. Details: `internal/datastore/AGENTS.md`.
+- **HARD RULE: support only the MySQL and MariaDB LTS releases we test.** A
+  tested release is supported; a release we do not test is not, and a release
+  already end of life upstream is not tested (MySQL 5.7 and 8.0, MariaDB 10.6
+  and older). No workarounds, version branches or tests for unsupported
+  releases, no fixes for bugs that only show on them, and no end of life dates
+  in code. The current list is in `internal/datastore/AGENTS.md`.
+- **HARD RULE: there are NO primary or secondary models.** Every classifier
+  model (BirdNET v2.4, BirdNET+ v3.0, Perch v2, the bat models and the rest)
+  is a peer. BirdNET v2.4 is the built-in model that cannot be uninstalled; it
+  is not a primary model, and no other model is secondary to it. Never call a
+  model primary, secondary or main, and never design for that hierarchy: no
+  "Primary" badge or label in the UI, no ordering that puts one model first
+  because of its rank, and no such wording in code, comments, logs, i18n keys
+  or docs. Some models use the `birdnet.threshold` value unless
+  their own threshold is switched on (`modelGlobalConfidenceThreshold` in
+  `internal/analysis/processor/processor.go`). Describe that as a shared
+  setting by its name ("uses the BirdNET v2.4 threshold"), not as one model
+  ranking above another. Older names that still say primary or secondary (such
+  as `ReloadSecondaryModels` or the `secondaryThreshold` i18n keys) are
+  leftovers to rename when you touch them, not a model hierarchy to follow.
 - **The frontend is for desktop and tablet only; mobile is out of scope.** Do
   not optimize, fix, test or file issues for phone viewports or phone layouts
   (about 640 px wide and below), and do not add phone-specific workarounds.
@@ -167,8 +188,11 @@ These checks cover only the default build tags and your own OS:
   so treat a failure there as a real break. The native Windows and
   macOS test jobs run only when a maintainer adds the `full-ci` label, and they
   are advisory with known failures, so a green check there proves nothing
-  unless you read the job output. When you change OS-specific files
-  (`_windows.go`, `_darwin.go`), say so in the PR and ask for `full-ci`.
+  unless you read the job output. On a pull request they test the packages
+  with OS-specific files, the native-library and SIMD boundary and the packages
+  the pull request changes; the weekly run and a manual run with scope=full
+  test the whole suite. When you change OS-specific files (`_windows.go`,
+  `_darwin.go`), say so in the PR and ask for `full-ci`.
 
 ## PR Creation Rules
 

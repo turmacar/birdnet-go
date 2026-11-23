@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/tphakala/birdnet-go/internal/api/v2/apitest"
+	"github.com/tphakala/birdnet-go/internal/classifier"
 	"github.com/tphakala/birdnet-go/internal/classifier/region"
 	"github.com/tphakala/birdnet-go/internal/conf"
 )
@@ -58,11 +59,16 @@ func TestGetModelRegions_AutoResolves(t *testing.T) {
 	assert.True(t, resp.LocationConfigured)
 	assert.Equal(t, "andes", resp.Resolved.Slug, "Bogota resolves to andes")
 	assert.Equal(t, string(region.SourceAuto), resp.Resolved.Source)
-	// Families share one slug set, so the dropdown union carries exactly the
-	// tiles of any one family's embedded table.
-	perchTable, ok := region.TableForRepo("tphakala/Perch-v2-Models")
-	require.True(t, ok, "perch region table must be embedded")
-	assert.Len(t, resp.Regions, len(perchTable.Regions), "dropdown union covers every tile")
+	// The dropdown carries the union of every family's tile set.
+	tables, err := region.Tables()
+	require.NoError(t, err)
+	union := map[string]bool{}
+	for _, tbl := range tables {
+		for slug := range tbl.Regions {
+			union[slug] = true
+		}
+	}
+	assert.Len(t, resp.Regions, len(union), "dropdown union covers every tile of every family")
 
 	// The options are sorted and each carries display metadata.
 	for _, o := range resp.Regions {
@@ -82,17 +88,32 @@ func TestGetModelRegions_AutoResolves(t *testing.T) {
 	}
 }
 
-// TestGetModelRegions_Ambiguous confirms the ambiguous border case surfaces a
-// runner-up.
+// TestGetModelRegions_Ambiguous confirms the handler projects the resolver's
+// result for an ambiguous border point, runner-up included. The geometry is the
+// region package's; the expectation is derived from it.
 func TestGetModelRegions_Ambiguous(t *testing.T) {
+	const (
+		borderLat = 2.0
+		borderLon = -71.0
+	)
+	tables, err := region.Tables()
+	require.NoError(t, err)
+	want := region.Select(representativeTable(tables), region.ModeAuto, borderLat, borderLon)
+	require.True(t, want.Ambiguous, "fixture point must be ambiguous in the region data")
+
 	resp := getRegions(t, func(s *conf.Settings) {
-		s.BirdNET.Latitude = 2.0
-		s.BirdNET.Longitude = -71.0
+		s.BirdNET.Latitude = borderLat
+		s.BirdNET.Longitude = borderLon
 		s.BirdNET.LocationConfigured = true
 	})
-	assert.Equal(t, "andes", resp.Resolved.Slug)
-	assert.True(t, resp.Resolved.Ambiguous, "the border point is ambiguous")
-	assert.Equal(t, "amazonia", resp.Resolved.RunnerUp)
+	// Compare field by field: toRegionResolution is the projection under test.
+	assert.Equal(t, RegionResolution{
+		Slug:      want.Slug,
+		Source:    string(want.Source),
+		Ambiguous: want.Ambiguous,
+		RunnerUp:  want.RunnerUp,
+	}, resp.Resolved)
+	require.NotEmpty(t, want.RunnerUp, "an ambiguous point names a runner-up")
 }
 
 // TestGetModelRegions_GlobalStillPreviews confirms that under the global setting
@@ -126,14 +147,14 @@ func TestGetModelRegions_NoLocation(t *testing.T) {
 	}
 }
 
-// TestModelRegionConstantsMatchResolver is the drift guard for keeping the conf
-// mode constants (defined independently so conf stays free of a classifier
-// dependency) equal to the resolver's mode vocabulary.
-func TestModelRegionConstantsMatchResolver(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, region.ModeAuto, conf.ModelRegionAuto, "auto mode constant drifted")
-	assert.Equal(t, region.ModeGlobal, conf.ModelRegionGlobal, "global mode constant drifted")
-}
+// The conf mode constants are defined independently so conf stays free of a
+// classifier dependency. Each pair is a constant expression, so a drifted value
+// makes the map literal below carry two identical keys, and the package stops
+// compiling with "duplicate key false in map literal" on that line.
+var (
+	_ = map[bool]struct{}{false: {}, region.ModeAuto == conf.ModelRegionAuto: {}}
+	_ = map[bool]struct{}{false: {}, region.ModeGlobal == conf.ModelRegionGlobal: {}}
+)
 
 // TestResolveRecommendRegion covers the slug the recommender scores against for
 // each ModelRegion mode. It mutates process-global settings via WithSettingsFunc,
@@ -155,7 +176,8 @@ func TestResolveRecommendRegion(t *testing.T) {
 	resolve := func(t *testing.T, mutate func(*conf.Settings)) string {
 		t.Helper()
 		core := apitest.NewCore(t, apitest.WithSettingsFunc(mutate))
-		return New(core, nil).resolveRecommendRegion()
+		fallback, _ := New(core, nil).resolveRecommendRegions(classifier.VisibleCatalog())
+		return fallback
 	}
 
 	t.Run("auto with configured coordinates resolves a region", func(t *testing.T) {
@@ -197,35 +219,83 @@ func TestResolveRecommendRegion(t *testing.T) {
 	})
 }
 
-// findRegion returns the option with the given slug from the dropdown options.
-func findRegion(t *testing.T, regions []RegionOption, slug string) RegionOption {
-	t.Helper()
-	for i := range regions {
-		if regions[i].Slug == slug {
-			return regions[i]
+// TestRecommendRegions covers the per-entry recommender regions over synthetic
+// tables: family A ships slug "x" (its tile contains the test point), family B
+// ships "y" only (its tile also contains the point) and lacks "x". Catches an
+// entry getting a slug its own family does not ship, and the unconfigured cases
+// regressing.
+func TestRecommendRegions(t *testing.T) {
+	t.Parallel()
+	const (
+		lat, lon = 10.0, 10.0
+		repoA    = "o/A"
+		repoB    = "o/B"
+	)
+	tile := func(slug string) region.Region {
+		return region.Region{
+			Name: slug, Tier: region.TierRegional,
+			BBoxes:   []region.BBox{{LatMin: 0, LatMax: 20, LonMin: 0, LonMax: 20}},
+			Centroid: []float64{lat, lon},
 		}
 	}
-	t.Fatalf("region %q not present in options", slug)
-	return RegionOption{}
+	tables := map[string]*region.Table{
+		repoA: {Repo: repoA, Regions: map[string]region.Region{"x": tile("x"), "y": tile("y")}},
+		repoB: {Repo: repoB, Regions: map[string]region.Region{"y": tile("y")}},
+	}
+	entries := []classifier.CatalogEntry{
+		{ID: "a", HuggingFaceRepo: repoA},
+		{ID: "b", HuggingFaceRepo: repoB},
+		{ID: "flat", HuggingFaceRepo: "o/none"},
+	}
+
+	tests := []struct {
+		name        string
+		modelRegion string
+		configured  bool
+		wantFall    string
+		wantByID    map[string]string
+	}{
+		{"auto resolves in each family's own table", region.ModeAuto, true, "x", map[string]string{"a": "x", "b": "y"}},
+		{"pinned slug present in one family", "x", true, "x", map[string]string{"a": "x", "b": "y"}},
+		{"pinned slug honoured without a location", "y", false, "y", map[string]string{"a": "y", "b": "y"}},
+		{"pinned slug absent from a family stays out of its table when unconfigured", "x", false, "x", map[string]string{"a": "x", "b": ""}},
+		{"auto without a location stays global", region.ModeAuto, false, "", map[string]string{"a": "", "b": ""}},
+		{"global mode stays global", region.ModeGlobal, true, "", map[string]string{"a": "", "b": ""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fallback, byEntry := recommendRegions(tables, entries, tt.modelRegion, tt.configured, lat, lon)
+			assert.Equal(t, tt.wantFall, fallback)
+			assert.Equal(t, tt.wantByID, byEntry, "an entry without a table is absent so it uses the fallback")
+		})
+	}
 }
 
 // TestGetModelRegions_OptionsCarryCountries confirms the dropdown options carry
 // the ISO country codes the UI localizes client-side, for both the core set and
-// the partial set (a region that straddles a border).
+// the partial set (a region that straddles a border), as the embedded data
+// defines them.
 func TestGetModelRegions_OptionsCarryCountries(t *testing.T) {
+	tables, err := region.Tables()
+	require.NoError(t, err)
+	rep := representativeTable(tables)
+	require.NotNil(t, rep)
+
 	resp := getRegions(t, func(s *conf.Settings) {
 		s.BirdNET.Latitude = 4.7 // Bogota (as elsewhere); value is irrelevant here
 		s.BirdNET.Longitude = -74.1
 		s.BirdNET.LocationConfigured = true
 	})
 
-	nordic := findRegion(t, resp.Regions, "nordic")
-	assert.NotEmpty(t, nordic.Countries.Core, "core countries populated")
-	assert.Contains(t, nordic.Countries.Core, "FI", "Nordic covers Finland")
-
-	britishIsles := findRegion(t, resp.Regions, "british-isles")
-	assert.Contains(t, britishIsles.Countries.Core, "GB")
-	assert.NotEmpty(t, britishIsles.Countries.Partial, "British Isles has a partial-coverage country")
+	var hasCore, hasPartial bool
+	for _, o := range resp.Regions {
+		assert.Equal(t, rep.Regions[o.Slug].Countries, o.Countries, "countries of %s", o.Slug)
+		hasCore = hasCore || len(o.Countries.Core) > 0
+		hasPartial = hasPartial || len(o.Countries.Partial) > 0
+	}
+	assert.True(t, hasCore, "the data has a region with core countries")
+	assert.True(t, hasPartial, "the data has a region with partial countries")
 }
 
 // coverageMapReq issues GET /models/regions/:slug/map for slug with an optional
@@ -250,8 +320,8 @@ func coverageMapReq(t *testing.T, slug, ifNoneMatch string) *httptest.ResponseRe
 }
 
 // TestGetRegionCoverageMap_ServesSVG confirms a known slug serves the themeable
-// SVG with a strong ETag and cache header, and that a matching If-None-Match
-// yields a bodyless 304.
+// SVG with a strong ETag and cache header, that a matching If-None-Match
+// yields a bodyless 304, and that a mismatched one gets the body.
 func TestGetRegionCoverageMap_ServesSVG(t *testing.T) {
 	rec := coverageMapReq(t, "nordic", "")
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -267,6 +337,11 @@ func TestGetRegionCoverageMap_ServesSVG(t *testing.T) {
 	assert.Equal(t, http.StatusNotModified, notModified.Code)
 	assert.Empty(t, notModified.Body.String(), "304 carries no body")
 	assert.Equal(t, etag, notModified.Header().Get("ETag"), "304 still echoes the ETag")
+
+	// A stale If-None-Match still gets the full SVG, not a 304.
+	stale := coverageMapReq(t, "nordic", `"stale-etag"`)
+	require.Equal(t, http.StatusOK, stale.Code)
+	assert.Contains(t, stale.Body.String(), `class="cov"`)
 }
 
 // TestGetRegionCoverageMap_NotFound confirms unknown and malformed slugs 404, so
@@ -276,14 +351,6 @@ func TestGetRegionCoverageMap_NotFound(t *testing.T) {
 		rec := coverageMapReq(t, slug, "")
 		assert.Equalf(t, http.StatusNotFound, rec.Code, "slug %q must 404", slug)
 	}
-}
-
-// TestGetRegionCoverageMap_MismatchedETagServesBody confirms a stale/mismatched
-// If-None-Match still gets the full SVG (200), not a 304.
-func TestGetRegionCoverageMap_MismatchedETagServesBody(t *testing.T) {
-	rec := coverageMapReq(t, "nordic", `"stale-etag"`)
-	require.Equal(t, http.StatusOK, rec.Code)
-	assert.Contains(t, rec.Body.String(), `class="cov"`)
 }
 
 // TestGetModelRegions_OptionsAreSorted pins the (groupDisplay, name, slug)

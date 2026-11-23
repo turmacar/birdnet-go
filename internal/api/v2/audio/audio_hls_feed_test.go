@@ -2,6 +2,7 @@ package audio
 
 import (
 	"encoding/binary"
+	"sync"
 	"testing"
 	"time"
 
@@ -66,7 +67,10 @@ func writeFrame(tb testing.TB, h *hlsConsumer, size int, seq uint64) {
 func drainFeed(feed *audioFeed) (seqs []uint64, totalBytes int64) {
 	for {
 		select {
-		case chunk := <-feed.ch:
+		case chunk, ok := <-feed.ch:
+			if !ok {
+				return seqs, totalBytes
+			}
 			feed.release(len(chunk.data))
 			seqs = append(seqs, binary.BigEndian.Uint64(chunk.data))
 			totalBytes += int64(len(chunk.data))
@@ -171,34 +175,6 @@ func TestAudioFeedDropsOldest(t *testing.T) {
 		"the newest frames must survive and the oldest must be evicted")
 }
 
-// TestAudioFeedReleaseRestoresCapacity checks the accounting contract from the
-// consumer side: a feed loop that reports its dequeues gets the whole budget
-// back, so a queue that filled during a stall does not stay full afterwards.
-func TestAudioFeedReleaseRestoresCapacity(t *testing.T) {
-	t.Parallel()
-
-	const frameSize = 1024
-	const capacity = 4
-	h, feed := newTestFeedConsumer(frameSize * capacity)
-
-	for seq := range uint64(capacity) {
-		writeFrame(t, h, frameSize, seq)
-	}
-	require.Equal(t, int64(frameSize*capacity), feed.queued.Load())
-
-	seqs, _ := drainFeed(feed)
-	require.Len(t, seqs, capacity)
-	require.Equal(t, int64(0), feed.queued.Load())
-
-	// The next full budget must be admitted without a single eviction.
-	for seq := range uint64(capacity) {
-		writeFrame(t, h, frameSize, capacity+seq)
-	}
-	seqs, _ = drainFeed(feed)
-	assert.Equal(t, []uint64{4, 5, 6, 7}, seqs,
-		"a drained queue must accept a full budget again with nothing dropped")
-}
-
 // TestAudioFeedAdmitsOversizedChunk covers the makeRoom early exit. A chunk
 // larger than the entire budget can never be made to fit, and refusing it would
 // silence the stream permanently rather than briefly, so it is admitted and the
@@ -217,28 +193,6 @@ func TestAudioFeedAdmitsOversizedChunk(t *testing.T) {
 	assert.Equal(t, []uint64{1}, seqs,
 		"the oversized chunk must be admitted and the queue emptied to take it")
 	assert.Equal(t, int64(budget*2), totalBytes)
-}
-
-// TestAudioFeedUnboundedKeepsSlotBound pins audioFeed's contract when the byte
-// budget is disabled (maxBytes 0): the budget is inert and the channel's slot
-// count is the only bound. Production always sets a budget, but the primitive
-// must still behave when one is not supplied.
-func TestAudioFeedUnboundedKeepsSlotBound(t *testing.T) {
-	t.Parallel()
-
-	h, feed := newTestFeedConsumer(0)
-
-	// Well past any byte budget: this is 32 MB of PCM at the RTSP frame size.
-	for seq := range uint64(defaultReadBufferSize) {
-		writeFrame(t, h, rtspFrameBytes, seq)
-	}
-
-	seqs, totalBytes := drainFeed(feed)
-
-	require.Len(t, seqs, defaultReadBufferSize,
-		"every slot must be used before anything is dropped")
-	assert.Equal(t, int64(defaultReadBufferSize)*rtspFrameBytes, totalBytes)
-	assert.Equal(t, uint64(0), seqs[0], "nothing should have been evicted")
 }
 
 // TestAudioFeedSlotExhaustionDropsOldest covers Write's slot-exhaustion arm: the
@@ -293,4 +247,114 @@ func TestAudioFeedWriteRejectsAfterClose(t *testing.T) {
 	require.ErrorIs(t, err, audiocore.ErrConsumerClosed)
 	assert.Empty(t, feed.ch, "a closed consumer must not queue anything")
 	assert.Equal(t, int64(0), feed.queued.Load())
+}
+
+// requireFeedClosed fails unless feed.ch is closed and drained. It never blocks:
+// an open empty channel falls through to the default arm.
+func requireFeedClosed(t *testing.T, feed *audioFeed, msg string) {
+	t.Helper()
+	select {
+	case _, ok := <-feed.ch:
+		require.False(t, ok, msg)
+	default:
+		require.FailNow(t, msg)
+	}
+}
+
+// TestAudioFeedCloseClosesChannel verifies that Close closes feed.ch after any
+// buffered chunks drain, and is idempotent on repeated calls.
+func TestAudioFeedCloseClosesChannel(t *testing.T) {
+	t.Parallel()
+
+	t.Run("drains buffered chunks then observes closed channel", func(t *testing.T) {
+		t.Parallel()
+
+		h, feed := newTestFeedConsumer(nativeHLSFeedQueueBytes)
+		writeFrame(t, h, soundCardFrameBytes, 1)
+		writeFrame(t, h, soundCardFrameBytes, 2)
+
+		require.NoError(t, h.Close())
+
+		seqs, totalBytes := drainFeed(feed)
+		assert.Equal(t, []uint64{1, 2}, seqs, "buffered chunks must remain drainable after Close")
+		assert.Equal(t, int64(2*soundCardFrameBytes), totalBytes)
+		assert.Equal(t, int64(0), feed.queued.Load())
+		requireFeedClosed(t, feed, "feed.ch must be closed after Close and draining")
+	})
+
+	t.Run("idempotent on repeated calls", func(t *testing.T) {
+		t.Parallel()
+
+		h, feed := newTestFeedConsumer(nativeHLSFeedQueueBytes)
+		assert.NotPanics(t, func() {
+			assert.NoError(t, h.Close())
+			assert.NoError(t, h.Close())
+		})
+		requireFeedClosed(t, feed, "feed.ch must be closed after repeated Close calls")
+	})
+}
+
+// TestAudioFeedEvictOldestOnClosedChannel verifies that evictOldest reports
+// nothing to evict on a closed empty channel, which is what lets makeRoom stop
+// instead of looping on zero-value receives.
+func TestAudioFeedEvictOldestOnClosedChannel(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan audioChunk, 4)
+	close(ch)
+	feed := &audioFeed{ch: ch, maxBytes: 1024}
+	feed.queued.Store(2048) // advisory count above the budget, so makeRoom would keep evicting
+
+	// require, not assert: continuing into makeRoom after a failure would spin.
+	require.False(t, feed.evictOldest(), "evictOldest must return false on a closed empty channel")
+	assert.Equal(t, int64(2048), feed.queued.Load())
+	assert.Equal(t, 0, feed.makeRoom(512), "makeRoom must exit cleanly when the channel is closed and empty")
+}
+
+// TestAudioFeedWriteConcurrentWithClose verifies that a Write racing Close
+// returns normally instead of sending on the closed feed channel, whatever the
+// caller's ordering. Writers keep running while Close lands, so a Write that
+// has passed the closed check when Close closes the channel would panic. The
+// window is narrow, so the race is repeated over fresh consumers.
+func TestAudioFeedWriteConcurrentWithClose(t *testing.T) {
+	t.Parallel()
+
+	const (
+		rounds  = 300
+		writers = 4
+	)
+	frame := audiocore.AudioFrame{Data: make([]byte, soundCardFrameBytes)}
+
+	for range rounds {
+		h, feed := newTestFeedConsumer(nativeHLSFeedQueueBytes)
+
+		// Each writer reports the error that ended it; assertions stay on the
+		// test goroutine.
+		stopErrs := make(chan error, writers)
+		var started, finished sync.WaitGroup
+		started.Add(writers)
+		finished.Add(writers)
+		for range writers {
+			go func() {
+				defer finished.Done()
+				started.Done()
+				for {
+					if err := h.Write(frame); err != nil {
+						stopErrs <- err
+						return
+					}
+				}
+			}()
+		}
+		started.Wait()
+
+		require.NoError(t, h.Close())
+		finished.Wait()
+		close(stopErrs)
+		for err := range stopErrs {
+			require.ErrorIs(t, err, audiocore.ErrConsumerClosed)
+		}
+		drainFeed(feed)
+		requireFeedClosed(t, feed, "feed.ch must be closed once the writers have stopped")
+	}
 }

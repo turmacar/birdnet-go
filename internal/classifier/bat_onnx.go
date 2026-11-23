@@ -22,7 +22,7 @@ type Bat struct {
 	info               ModelInfo
 	mu                 sync.Mutex
 	// device is the compute device the bat pipeline bound to: the OpenVINO device
-	// (CPU/GPU) when the heavy embedding extractor runs on OpenVINO, otherwise
+	// (CPU, GPU or GPU.<n>) when the heavy embedding extractor runs on OpenVINO, otherwise
 	// deviceCPU for the ONNX Runtime CPU EP. The tiny bat classifier head always runs
 	// on ORT CPU, so this reports the embedding extractor's device. Set once at
 	// construction; reported via RuntimeInfo().
@@ -58,7 +58,7 @@ type BatModelConfig struct {
 	// ORT. Any failure falls back to ORT.
 	Backend        string // BirdNET.Backend ("auto"/"onnx"/"openvino")
 	OpenVINOPath   string // BirdNET.OpenVINOPath (libopenvino_c location)
-	OpenVINODevice string // BirdNET.OpenVINODevice ("auto"/"cpu"/"gpu")
+	OpenVINODevice string // BirdNET.OpenVINODevice ("auto", "cpu", "gpu" or "GPU.<n>")
 }
 
 // NewBat creates a new bat detection model instance.
@@ -156,7 +156,7 @@ func NewBat(cfg *BatModelConfig) (*Bat, error) {
 // tryBatOpenVINO attempts to build an OpenVINO embedding extractor for the bat
 // pipeline's heavy embedding model. It returns (extractor, device, precision, true)
 // on success or (nil, "", "", false) to fall back to ORT, where device is the
-// concrete OpenVINO device the extractor bound to (inference.OVDeviceCPU/OVDeviceGPU)
+// concrete OpenVINO device the extractor bound to (CPU, GPU or a concrete GPU.<n>)
 // and precision is the effective runtime precision label (FP32 for the bat model on
 // every device). Any failure
 // (gate denied, init/compile/validation error) is logged and swallowed: OpenVINO
@@ -168,8 +168,8 @@ func NewBat(cfg *BatModelConfig) (*Bat, error) {
 func tryBatOpenVINO(cfg *BatModelConfig, expectedDim int) (extractor inference.EmbeddingExtractor, device, precision string, ok bool) {
 	log := GetLogger()
 
-	// openVINOPlanFor gates on the build tag, backend preference, and device
-	// availability without needing the output port, so run it first; only read the
+	// openVINOPlanFor gates on the build tag, backend preference, device
+	// availability and, on arm64 auto, ONNX Runtime preference without needing the output port, so run it first; only read the
 	// model metadata to resolve the embedding port once OpenVINO is actually in play.
 	// This avoids a wasted metadata read (and a misleading warning) on the common
 	// non-OpenVINO build. The output index passed here is a placeholder, overwritten
@@ -217,11 +217,10 @@ func tryBatOpenVINO(cfg *BatModelConfig, expectedDim int) (extractor inference.E
 		return nil, "", "", false
 	}
 
-	log.Info("Bat embedding extractor using OpenVINO backend",
-		logger.String("device", plan.device),
+	log.Info("Bat embedding extractor using OpenVINO backend", append(openVINODeviceFields(plan),
 		logger.String("precision", openVINOPrecisionLabel(plan.precision)),
 		logger.Int("embedding_dim", extractor.NumSpecies()),
-		logger.String("init_time", time.Since(start).String()))
+		logger.String("init_time", time.Since(start).String()))...)
 	return extractor, plan.device, openVINOEffectivePrecision(plan.precision), true
 }
 
@@ -253,10 +252,6 @@ func (b *Bat) Predict(ctx context.Context, samples [][]float32) ([]datastore.Res
 			Build()
 	}
 
-	log.Debug("bat predict starting",
-		logger.Int("sample_len", len(samples[0])),
-		logger.Int("chunks", len(samples)))
-
 	embStart := time.Now()
 	_, embeddings, err := b.embeddingExtractor.PredictWithEmbeddings(samples[0])
 	embDuration := time.Since(embStart)
@@ -283,7 +278,7 @@ func (b *Bat) Predict(ctx context.Context, samples [][]float32) ([]datastore.Res
 		return nil, err
 	}
 
-	log.Debug("bat embeddings extracted",
+	log.Trace("bat embeddings extracted",
 		logger.Int("embedding_dim", len(embeddings)),
 		logger.Duration("duration", embDuration))
 
@@ -303,7 +298,7 @@ func (b *Bat) Predict(ctx context.Context, samples [][]float32) ([]datastore.Res
 		return nil, err
 	}
 
-	log.Debug("bat classification complete",
+	log.Trace("bat classification complete",
 		logger.Int("score_count", len(scores)),
 		logger.Duration("duration", classDuration))
 
@@ -344,7 +339,7 @@ func (b *Bat) Predict(ctx context.Context, samples [][]float32) ([]datastore.Res
 			logger.Float64("top_confidence", float64(topResults[0].Confidence)),
 			logger.Duration("total_duration", embDuration+classDuration))
 	} else {
-		log.Debug("bat no detections above threshold",
+		log.Trace("bat no detections above threshold",
 			logger.Int("pre_filter", preFilterCount),
 			logger.Float64("threshold", threshold),
 			logger.Duration("total_duration", embDuration+classDuration))
@@ -389,7 +384,7 @@ func (b *Bat) Labels() []string {
 }
 
 // RuntimeInfo returns the device, backend, and effective precision the bat
-// pipeline bound to at construction: the OpenVINO device (CPU/GPU) when the
+// pipeline bound to at construction: the OpenVINO device (CPU, GPU or GPU.<n>) when the
 // embedding extractor runs on OpenVINO, else "CPU" for the ONNX Runtime CPU EP;
 // BackendOpenVINO on the OV path (else BackendONNX); FP32 on the OV path (which
 // the bat embedding model is forced to), or the weight precision detected from
