@@ -281,12 +281,12 @@
             title={t('detections.weather.labels.lightningDistance')}
           >
             <Zap class="size-4 text-yellow-400" />
-            <span
-              >{t('detections.weather.labels.lightningCount', { count: extras.lightning_count })}
+            <span>
+              {t('detections.weather.labels.lightningCount', { count: extras.lightning_count })}
               {#if extras.lightning_distance != null}
                 {@const distance = `${convertDistance(extras.lightning_distance, temperatureUnit).toFixed(1)} ${getDistanceUnit(temperatureUnit)}`}
-                ({distance}){/if}</span
-            >
+                ({distance}){/if}
+            </span>
           </div>
         {/if}
       {/if}
